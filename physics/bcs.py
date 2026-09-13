@@ -1,21 +1,30 @@
-"""Facet-tag-driven BCs. Only the backside gets an explicit term (Robin,
-lumped TIM+spreader+sink); top/left/right are natural (zero-flux) in this
-weak form — top because chip.bcs.top_face defaults to adiabatic, left/right
-because they're the artificial cut through a repeating tile array, not real
-boundaries (PLAN.md: "the remaining Si acts as a guard band"). A C4 flip-chip
-top or an explicit periodic BC are both additive, later changes here, not to
-forms.py.
+"""Facet-tag-driven BCs. The backside always gets an explicit Robin term
+(lumped TIM+spreader+sink); the top gets a second one only if
+chip.bcs.top_h_eff is set (dual-sided cooling — the BSPDN study's config C),
+otherwise it's natural (zero-flux), i.e. adiabatic. Left/right are always
+natural: they're the artificial cut through a repeating tile array, not real
+boundaries (PLAN.md: "the remaining Si acts as a guard band"). An explicit
+periodic BC is a further, later, additive change here, not to forms.py.
 """
 
-from mesh.build import FACET_BOTTOM
+from mesh.build import FACET_BOTTOM, FACET_TOP
 
 
 def robin_terms(u, v, ds, chip):
-    """(bilinear_term, linear_term) for the backside Robin BC h_eff*(T-T_amb)."""
-    if chip.bcs.top_face != "adiabatic":
-        raise NotImplementedError(f"top_face={chip.bcs.top_face!r} not implemented yet")
-    h = chip.bcs.backside_h_eff
+    """(bilinear_term, linear_term) summed over every active Robin sink —
+    just the backside by default, backside+top under dual-sided cooling.
+    Energy conservation must be checked against this same sum (see
+    tests/test_gds_pipeline.py): with two sinks, p_gen == flux(bottom) +
+    flux(top), not flux(bottom) alone.
+    """
     t_amb = chip.bcs.ambient_t_k
-    a_robin = h * u * v * ds(FACET_BOTTOM)
-    l_robin = h * t_amb * v * ds(FACET_BOTTOM)
+    h_bottom = chip.bcs.backside_h_eff
+    a_robin = h_bottom * u * v * ds(FACET_BOTTOM)
+    l_robin = h_bottom * t_amb * v * ds(FACET_BOTTOM)
+
+    if chip.bcs.top_h_eff is not None:
+        h_top = chip.bcs.top_h_eff
+        a_robin += h_top * u * v * ds(FACET_TOP)
+        l_robin += h_top * t_amb * v * ds(FACET_TOP)
+
     return a_robin, l_robin

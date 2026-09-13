@@ -1,0 +1,9 @@
+* Minimal subset of models/all.spice's global .param block (rotweak scaling
+* factors) needed by the special_nfet_pass/latch, special_pfet_pass model
+* cards this project's bitcell netlist uses -- not the whole PDK's diode/
+* cap/RF dependency graph, which the bitcell doesn't reference.
+.param
++ lv_dlc_rotweak = .00e-9
++ sky130_fd_pr__special_nfet_pass__dlc_rotweak = lv_dlc_rotweak
++ sky130_fd_pr__special_nfet_latch__dlc_rotweak = lv_dlc_rotweak
++ sky130_fd_pr__special_pfet_pass__dlc_rotweak = lv_dlc_rotweak

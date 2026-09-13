@@ -390,10 +390,133 @@ an LOD, not to widen the core count.
   (solution.xdmf for ParaView), `post/viz.py` (temperature_2d.png — clean
   monotonic gradient from the cool Robin-cooled backside up to the hot ALU
   corner, visually confirms the FEM solution before trusting any number from it).
-- Next: step 8, the 3D path — same ChipSpec through a 3D `mesh/build.py`, re-run
-  GATE 0, then the numeric gates again on 3D. That's also when `source_depth_m`
-  goes away (a true 3D mesh resolves each source's real depth directly). Steps
-  9 (nonlinear k(T), transient) remain deferred and additive per the plan.
+- **Step 8 (3D path) is done, and GATE 0 (3D) has passed** — but getting there
+  took several real debugging rounds, worth recording in detail:
+  - `mesh/volume.py` (3D geometry emitter — all 30 devices + via farm, via
+    `mesh/boxes.insert_rect`'s 2D analogue of the 2D path's interval punch),
+    `mesh/viz3d.py` (pyvista off-screen renders — confirmed working here despite
+    no display: "bad X server connection" warning is harmless, screenshot still
+    succeeds), `cases/run_3d.py`.
+  - **Bug 1 — `fragment` doesn't scale**: the first attempt used
+    `gmsh.model.occ.fragment` (same as the 2D path) over the full geometry
+    (~939 boxes). It never finished — killed after 15+ min with RAM past 7GB.
+    Root cause: `fragment` does general boolean intersection, superlinear in
+    entity count. Our boxes never overlap by construction (`insert_rect`
+    always pre-splits into non-overlapping touching pieces), so the correct
+    tool is `gmsh.model.occ.removeAllDuplicates()` — a coincidence merge, not
+    an intersection solve. Verified on a small case first (0
+    coincident-but-separate node pairs at a punched interface, exact total
+    volume) before trusting it at scale; at ~939 boxes it costs ~45-70s,
+    consistently.
+  - **Red herring — `conda run` buffers stdout until the child exits.** Several
+    retries appeared to hang for 15-50 minutes with zero output; this was
+    misdiagnosed as "still stuck" and killed prematurely more than once. Fix:
+    `conda run --no-capture-output` (or `-s`). Direct invocation of the env's
+    python binary also shows output live. Use one of these for any long
+    gmsh/dolfinx run from now on, or the output is invisible until exit.
+  - **Bug 2 — z-bleed in the 3D size fields**: `mesh/sizing.py`'s per-device
+    Distance+Threshold refinement is full 3D Euclidean, so its fine size was
+    leaking vertically into neighbouring z-layers (radius up to 0.9um, far
+    more than most layers' own 10s-100s of nm thickness) — and because
+    everything is combined with `Min`, that leaked fine size beat neighbouring
+    layers' own coarser Box fields. Fixed by gating each layer's
+    Distance+Threshold with a z-only Box mask (0 inside the layer's own
+    z-band, huge outside) via `Max`, so refinement never crosses a layer
+    boundary. Also found or note: the Distance field's points were added via
+    `gmsh.model.occ.addPoint` but never synchronized — OCC and the general
+    model keep separate tag namespaces, so the field silently couldn't find
+    them ("Unknown point N" warnings) until a `gmsh.model.occ.synchronize()`
+    was added right after point creation.
+  - **Scale tradeoff — even correctly z-gated, full nm-scale resolution at
+    all 30 devices simultaneously is LOD2 (single-device zoom) territory, not
+    a full-chip LOD1 build.** First correct-but-unscoped attempt hit 9.6M
+    nodes / >48GB RSS. Added `FEATURE_SIZE_FLOOR_UM=0.03` (30nm floor on the
+    3D path's feature size only — 2D and `spec/stack.py` keep full
+    resolution) and tightened the refinement radius from a generous 0.5-0.9um
+    guess to 0.15-0.3um (sized to the actual feature, not a guess) — cell
+    count in a refined disk scales as ~radius^2/thickness^3, so both levers
+    matter a lot. Documented as an accepted tradeoff: the 2D cross-section
+    already resolves the transistor z-anatomy at full fidelity; 3D's job is
+    the lateral array/via-path structure, not repeating that check.
+  - **Also, unrelated to any of the above**: the machine is shared, and
+    another user's ~23 concurrent Synopsys Sentaurus TCAD jobs (load avg
+    56-59 on 112 cores) coincided with the first debugging rounds, which
+    genuinely slowed things down on top of the real bugs above and made
+    diagnosis harder. Worth checking `uptime`/`ps` before assuming a slow
+    gmsh run is a code problem.
+  - **Final result**: row-0-equivalent full 3D tile (all 30 devices, via
+    farm), builds in **569.7s (~9.5 min)** end to end: geometry+stitch 43.0s,
+    sizing fields 1.8s, tagging <0.1s, `mesh.generate(3)` 380.1s (2D surface
+    pass 30.9s + tet fill/optimize), write .msh 9.1s, extraction 1.0s, stack
+    table 1.5s, pyvista renders 7.8s, `model_to_mesh` 123.4s. **5,378,652
+    cells**, 936,847 nodes, 72 tagged regions, no ill-shaped tets. Stack table
+    z_realized matches z_expected exactly on all 15 layers, cell counts sum
+    exactly to the total — same clean check as 2D. Renders confirm: the via
+    farm block sits exactly at its designed corner (19-23um, 19-23um), and
+    the checkerboard via pattern is visible correctly across the *entire*
+    30-device array (something the 2D single-row cut couldn't show).
+- Next: the 3D solve (`cases/run_3d_solve.py` already written, `source_depth_m`
+  is not needed there — a true 3D mesh resolves each source's real depth
+  directly) — build+solve+sanity-check on the full 3D tile. Then steps 9
+  (nonlinear k(T), transient) remain deferred and additive per the plan.
+- **GDS layout pipeline (2026-09-01/09-02): 2D cross-section done and verified
+  end to end.** Target: `data/ctrl_fast_ro_final.gds` — a 25-stage controlled
+  ring oscillator, 27.9 x 11.0 um die, 74 transistors (37 N + 37 P,
+  multi-finger), 380 channels from OD ∩ PO at L=90nm with an exact 2:1
+  PMOS(W=0.48um)/NMOS(W=0.24um) split, 5-metal BEOL with real M3/M5 power
+  rails. Layer map pinned by *evidence* (via-cell contents), not vendor
+  convention. Full findings and plan in **`GDS_PLAN.md`**.
+  - New `gds/` package: `read.py` (load/flatten/union-merge), `techmap.py`
+    (the (layer,datatype)->z-band+material map — GDS carries no z at all, so
+    every thickness is a documented estimate), `sources.py` (OD∩PO -> 380
+    channel sources by device width, CO∩OD -> 924 contact sources, 70/30
+    split matching the synthetic chip's convention).
+  - New `mesh/gds_section.py` + `mesh/gds_sizing.py` + `mesh/gds_build.py` +
+    `mesh/gds_viz.py`: 2D cross-section mesh from the *real* polygon layout
+    (cutline boolean-intersection instead of synthetic device positions).
+    `physics/`, `solve/`, `post/` needed **zero changes** — `spec.chip.SourceBox`
+    and `BoundaryConditions` reused directly, exactly as planned.
+  - **Two real bugs found, both variants of the same 2D-homogenization trap
+    that produced the synthetic chip's Tmax=4135K** (full detail in
+    GDS_PLAN.md section 5): (1) the cutline's strip half-height (0.1nm) was
+    thinner than the GDS grid precision (1nm) and silently quantized to
+    zero — every layer showed as pure background, no error, until checking
+    the stack table. (2) `w_um`/`l_um` were assigned by "real device axis"
+    instead of "which axis the 2D mesh actually resolves", which
+    `physics/coeffs.py`'s `source_depth_m` needs to be the other way round —
+    produced Tmax=2281.7K (past Si's melting point) even with the homogenization
+    code path engaged. Fixed by swapping the convention and using the die's
+    own Y-extent (11.04um) as the homogenization depth.
+  - **Result**: GATE 0 passed (stack table z_realized==z_expected exactly on
+    all 15 bands, cell counts sum exactly to 129,933), energy conservation
+    holds to 1e-6 (`tests/test_gds_pipeline.py`, 3 tests), Tmax=323.15K
+    (23.1K rise at 1mW on the y=7.95um cut) — physically sane, same order as
+    the synthetic chip. Renders (`out/gds/{regions_2d,sources,temperature_2d}.png`)
+    show real multi-finger transistor cross-sections and a temperature field
+    with the individual device heat sources visible as a "picket fence"
+    right at the FEOL.
+  - **Not done yet**: 3D GDS build (CO+VIA1-4 are ~5,361 of 7,457 merged
+    polygons, mostly small isolated squares union-merge can't reduce —
+    untested whether `removeAllDuplicates()` still scales there); physical
+    sanity gate (devices under denser routing measurably cooler); real PDK
+    stack thicknesses (current numbers are documented estimates); activity-
+    factor weighting (flat width-proportional model used throughout).
+- **GDS pipeline pivot (2026-09-08): target file replaced with an open SKY130 macro.**
+  The proprietary `data/ctrl_fast_ro_final.gds` above was intentionally deleted (it
+  wasn't supposed to be used); the `gds/` package that read it had also gone missing
+  from disk and was reconstructed byte-for-byte from this session's own tool-call
+  history. Rather than restore a pipeline pointed at a file with no legal input, the
+  target moved to **`data/sram22_64x22m4w22.gds`**, a real, placed SKY130 SRAM macro
+  from `ucb-substrate/sram22_sky130_macros` (BSD-3) — 286.9x193.7um, 21,095 real
+  transistor channels. `gds/techmap.py` now uses SKY130's real public GDS layer map
+  (from open_pdks, cross-checked against actual usage in the macro) instead of
+  evidence-reconstructing a proprietary one, and gained a `li1` z-band (SKY130's real
+  local-interconnect layer, which the old PDK didn't have). GATE 0 and energy
+  conservation both pass on the new file; **a third instance of the 2D-cut
+  homogenization trap** was caught mid-fix (using the die's full Y-extent as
+  `source_depth_m` understated Tmax ~64x since this array, unlike the old 2-row file,
+  has a real measurable row pitch — fixed by reading it directly off the GDS
+  hierarchy, `gds.read.named_cell_bbox_um`). Full detail in **`GDS_PLAN.md`** section 8.
 - Two standing constraints for this project (also in Claude's cross-session memory):
   cap MPI/parallel work at 16 cores even though 112 are available; treat mesh/geometry
   visualization as a blocking gate before trusting any solve.

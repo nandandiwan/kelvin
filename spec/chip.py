@@ -3,7 +3,7 @@ post/ are all derived from. Pure data + validation, no dolfinx dependency.
 """
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 from .materials import get as get_material
 from .stack import LayerStack, lod1_stack
@@ -14,7 +14,11 @@ from .layout import Layout, default_layout
 class BoundaryConditions:
     ambient_t_k: float = 300.0
     backside_h_eff: float = 20000.0   # W/m^2/K, lumped TIM + Cu spreader + sink
-    top_face: str = "adiabatic"       # "adiabatic" | "c4_flip_chip"
+    top_face: str = "adiabatic"       # "adiabatic" | "c4_flip_chip" — descriptive only, see top_h_eff
+    # None (default) = adiabatic top, i.e. today's only-exit-is-the-backside
+    # model. A real value adds a second Robin sink on the top facet — dual-
+    # sided cooling for the BSPDN study (SRAM_THERMAL_REPORT.md's config C).
+    top_h_eff: Optional[float] = None
 
 
 # Fraction of a device's dissipated power attributed to the channel (hot-carrier

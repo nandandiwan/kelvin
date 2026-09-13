@@ -1,0 +1,14 @@
+GDS_PLAN.md
+SRAM_THERMAL_REPORT.md
+PLAN.md
+
+__pycache__/
+*.pyc
+
+# All simulation output (meshes, solutions, renders, gifs) -- regenerable
+# via the case scripts, and several of these routinely exceed GitHub's
+# 100MB per-file hard limit (mesh_tags.h5/gds_volume.msh from the finer
+# convergence/bspdn studies ran 100-471MB).
+out/
+
+*.log

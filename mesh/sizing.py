@@ -17,12 +17,26 @@ from spec.stack import LayerStack
 COARSE_UM = 5.0  # VOut: size far from any layer (never actually reached inside the domain)
 
 # 3D-only: how far from a device/via centre the fine size persists, and how
-# far out the ramp to background size finishes. Kept well under half the x
-# pitch (2um) and y pitch (3um) so neighbouring devices' refinement zones
-# don't merge into one contiguous fine region across the whole array.
-FEATURE_DIST_MIN_UM = 0.5
-FEATURE_DIST_MAX_UM = 0.9
+# far out the ramp to background size finishes. Sized to the feature itself
+# (device half-width 0.4um, via half-width 0.15um) plus a small margin, not
+# a generous guess — cell count in the refined disk scales with radius^2, so
+# a radius much bigger than the feature wastes volume on featureless fill
+# that didn't need fine resolution in the first place.
+FEATURE_DIST_MIN_UM = 0.15
+FEATURE_DIST_MAX_UM = 0.3
 BACKGROUND_UM = 1.0  # lateral size once far from any feature, for 3D
+
+# 3D-only floor on the per-layer feature mesh size. Resolving every thin
+# transistor layer (down to 5nm for STI_channel) at all 30 devices
+# simultaneously is LOD2 (single-device zoom) territory, not a full-chip
+# LOD1 build — cell count in a refined disk scales as ~1/h^3, so even with
+# the tightened radius above, unfloored sizes here blow up fast (an earlier
+# attempt hit 9.6M nodes and >48GB RSS before this floor existed). Coarser
+# through-thickness resolution on the thinnest layers is an accepted
+# tradeoff for the 3D path — the 2D cross-section already resolves the
+# z-anatomy at full fidelity; what 3D adds is the lateral device-array and
+# via-path structure, not a repeat of that check.
+FEATURE_SIZE_FLOOR_UM = 0.03
 
 
 def apply_2d_sizing(stack: LayerStack, x0: float, x1: float) -> None:
@@ -90,7 +104,8 @@ def apply_3d_sizing(chip: ChipSpec) -> None:
     field_ids = []
     for z0, z1, layer in stack.z_bounds():
         has_features = layer.device_fill is not None or layer.via_fill is not None
-        band_size = min(layer.mesh_size_um * 4, BACKGROUND_UM) if has_features else layer.mesh_size_um
+        feature_size = max(layer.mesh_size_um, FEATURE_SIZE_FLOOR_UM)
+        band_size = min(feature_size * 4, BACKGROUND_UM) if has_features else layer.mesh_size_um
 
         box = gmsh.model.mesh.field.add("Box")
         gmsh.model.mesh.field.setNumber(box, "VIn", band_size)
@@ -117,7 +132,7 @@ def apply_3d_sizing(chip: ChipSpec) -> None:
 
             thresh = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(thresh, "InField", dist)
-            gmsh.model.mesh.field.setNumber(thresh, "SizeMin", layer.mesh_size_um)
+            gmsh.model.mesh.field.setNumber(thresh, "SizeMin", feature_size)
             gmsh.model.mesh.field.setNumber(thresh, "SizeMax", band_size)
             gmsh.model.mesh.field.setNumber(thresh, "DistMin", FEATURE_DIST_MIN_UM)
             gmsh.model.mesh.field.setNumber(thresh, "DistMax", FEATURE_DIST_MAX_UM)

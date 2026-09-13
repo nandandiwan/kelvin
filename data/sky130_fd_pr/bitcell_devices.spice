@@ -1,0 +1,34 @@
+* Thin subckt wrappers around the raw sky130_fd_pr__special_* .model cards,
+* with an EXPLICIT bin suffix instead of relying on automatic HSPICE-style
+* dot-suffix bin resolution (ngspice printed "No compatibility mode
+* selected!" and does not resolve sky130_fd_pr__special_nfet_pass__model ->
+* ...__model.0 on its own; verified empirically, not assumed). Only 1-2
+* bins exist per device here and this project's bitcell netlist only ever
+* needs specific known (L, W) combinations, so explicit selection is exact
+* and simpler than fighting ngspice's binning compatibility mode.
+*
+* special_nfet_pass, special_nfet_latch: single bin (.0) each, W/L range
+* covers this cell's only usage -- just an unsuffixed alias.
+.subckt bitcell_nfet_pass d g s b
+.param l = 1 w = 1
+msky130_fd_pr__special_nfet_pass d g s b sky130_fd_pr__special_nfet_pass__model.0 l = {l} w = {w}
+.ends bitcell_nfet_pass
+
+.subckt bitcell_nfet_latch d g s b
+.param l = 1 w = 1
+msky130_fd_pr__special_nfet_latch d g s b sky130_fd_pr__special_nfet_latch__model.0 l = {l} w = {w}
+.ends bitcell_nfet_latch
+
+* special_pfet_pass: two bins. Bin .0 = L~150nm (lmin=1.495e-7,
+* lmax=1.505e-7) -- the real cross-coupled pull-ups (X5/X6, L=0.150).
+* Bin .1 = L~25-50nm (lmin=0.25e-7, lmax=0.5e-7) -- the parasitic D=S
+* devices from real LVS extraction (X3/X4, L=0.025).
+.subckt bitcell_pfet_pass d g s b
+.param l = 1 w = 1
+msky130_fd_pr__special_pfet_pass d g s b sky130_fd_pr__special_pfet_pass__model.0 l = {l} w = {w}
+.ends bitcell_pfet_pass
+
+.subckt bitcell_pfet_pass_shortl d g s b
+.param l = 1 w = 1
+msky130_fd_pr__special_pfet_pass_shortl d g s b sky130_fd_pr__special_pfet_pass__model.1 l = {l} w = {w}
+.ends bitcell_pfet_pass_shortl

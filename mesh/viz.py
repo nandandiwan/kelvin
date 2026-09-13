@@ -11,14 +11,19 @@ from matplotlib.collections import PolyCollection
 from matplotlib.patches import Patch
 
 MATERIAL_COLORS = {
-    "Si_bulk":     "#B0B0B0",
+    "Si_bulk":     "#C9C9C9",  # light neutral gray — background substrate only
     "Si_SD_doped": "#8899AA",
-    "Si_channel":  "#6677AA",
+    "Si_channel":  "#3D5A80",  # darker, more saturated — the heat-source silicon should read as "special"
     "SiO2":        "#CFE8F3",
     "low_k":       "#D8C9EA",
     "HfO2":        "#F4A6A6",
     "TiN":         "#C2A14D",
-    "W":           "#7A7A7A",
+    "PolySi":      "#B8895A",
+    # W and Al used to be indistinguishable-gray (W) or literally undefined,
+    # silently falling back to a gray nearly identical to Si_bulk's (Al) —
+    # every W/Al region in every BEOL render was misleadingly monochrome.
+    "W":           "#4D4D4D",  # dark charcoal, unambiguous against Si_bulk's light gray
+    "Al":          "#5B8DBE",  # steel blue — SKY130's real interconnect metal (see spec/materials.py)
     "NiSi":        "#E8C36B",
     "Cu_fine":     "#D98C4A",
     "Cu_thick":    "#B5652D",
