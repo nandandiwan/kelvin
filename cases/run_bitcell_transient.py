@@ -59,6 +59,7 @@ from gds.spice_power import LIB_PATH, bias_device_power_w, named_bias_point_powe
 from mesh.gds_build import build_gds_3d_mesh
 from mesh.viz3d import render_temperature_xy_slice
 from physics.coeffs import build_coeffs
+from post.budget import power_balance, print_power_balance
 from post.metrics import tmax
 from solve.transient import TransientHeatSolver
 from spec.chip import BoundaryConditions, SourceBox
@@ -232,6 +233,12 @@ def main():
             times_s.append(t_s); tmax_hist.append(tmax(T)[0])
             np.save(fields_dir / f"T_{step_i:03d}.npy", T.x.array.copy()); step_i += 1
         active_end_s = t_s
+
+        # P0.1 audit check (optimized-singing-creek.md): does q_active
+        # deliver the intended per-device power on THIS mesh -- unverified
+        # for the transient path until now.
+        print_power_balance(power_balance(mesh_data, registry, chip, T, k, q_active, source_depth_m=None),
+                             check_robin=False)  # not yet at steady state -- see post/budget.py's docstring
         for dt in _dt_schedule(N_IDLE_STEPS):
             T = solver.step(q_idle, dt=dt)
             t_s += dt

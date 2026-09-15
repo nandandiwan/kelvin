@@ -84,9 +84,43 @@ class GdsLayerBand:
     # that width is placed every pitch_um across the die, background material
     # filling the gaps. None for every real (GDS-sourced) band.
     synthetic_grid: "Tuple[float, float] | None" = None
+    # "lines" (default) or "posts", for a SYNTHETIC band in 3D. This is a
+    # physical distinction, not a drawing preference:
+    #   "lines" -- continuous strips, width_um wide, spanning the whole
+    #              window, repeating every pitch_um in x only. What a real
+    #              backside metal rail IS: its entire job is to carry heat
+    #              and current LATERALLY along its length.
+    #   "lines_perp" -- same, but running along x and repeating in y, i.e.
+    #              PERPENDICULAR to "lines". [Oprins] Fig. 5 shows the buried
+    #              power rails crossing the backside metal tracks at right
+    #              angles, with the uTSVs at the intersections.
+    #   "posts" -- discrete width_um x width_um islands on a pitch_um grid in
+    #              both x and y. What a real via/nTSV IS: a short vertical
+    #              connector, deliberately NOT laterally continuous.
+    # Getting this wrong silently destroys the effect being modelled -- a
+    # backside metal layer drawn as disconnected posts cannot spread heat
+    # laterally at all, which is the entire mechanism behind [Oprins]'
+    # published 27-30% benefit. The 2D cross-section path is unaffected (it
+    # draws x-intervals that extrude along the unresolved axis, i.e. always
+    # effectively lines) -- this only matters once the band is emitted in 3D.
+    synthetic_shape: str = "lines"
+    # Independent y pitch for posts, when the along-track spacing differs from
+    # the across-track one ([Oprins]: uTSVs step by the M1 pitch across the
+    # tracks but by ~3 buried-rail pitches along them).
+    synthetic_pitch_y_um: "float | None" = None
+    # Posts only: y-extent, when the feature is not square ([Oprins]' uTSV is
+    # 180 x 250 nm -> 18% area fraction, vs 25% for a 250nm square). None =
+    # square, using synthetic_grid's width for both axes.
+    synthetic_width_y_um: "float | None" = None
+    # Posts only: y offset applied to every other column, for a checkerboard
+    # via pattern -- see mesh/gds_volume.py::_synthetic_grid_rects.
+    synthetic_stagger_y_um: float = 0.0
 
     def __post_init__(self):
         get_material(self.background)
+        if self.synthetic_shape not in ("lines", "lines_perp", "posts"):
+            raise ValueError(
+                f"{self.name!r}: synthetic_shape must be 'lines', 'lines_perp' or 'posts'")
         for key, material in self.drawn:
             get_material(material)
             if key is SYNTHETIC and self.synthetic_grid is None:
@@ -228,9 +262,44 @@ _BSPDN_NTSV_PITCH_UM = _BSPDN_METAL_PITCH_UM  # [Oprins]: nTSV pitch = M1 pitch 
 _BSPDN_NTSV_WIDTH_UM = 0.25        # [Oprins] Table 1: µTSV "180nm x 250nm" — larger
                                     # of the two in-plane dimensions, W-filled.
 
+# [Oprins] Table 1's uTSV is 180 x 250 nm (not square) -> 18% area fraction
+# at the 500nm M1 pitch, close to the 16.7% uTSV density their reference case
+# states. A 250nm square would give 25%, overstating the via path by ~40%.
+# [Oprins] Fig. 5 / Table 1, read off the figure rather than inferred:
+#   - backside metal M1 tracks run one way (250nm wide, 500nm pitch);
+#   - FS buried power rails run PERPENDICULAR to them (30nm wide, 180nm pitch);
+#   - the uTSV sits at a track/rail INTERSECTION and spans the FULL track
+#     width (250nm across the track) by one rail pitch (180nm along it).
+# The uTSV is therefore 250 x 180 as drawn here, i.e. the transpose of a
+# first-pass 180 x 250 reading -- which left the via inset inside the track
+# instead of bridging it.
+_OPRINS_NTSV_X_UM = 0.250      # across the track == full M1 width
+_OPRINS_NTSV_Y_UM = 0.180      # along the track  == one buried-rail pitch
+# Along-track via spacing = TWO buried-rail pitches, read off [Oprins] Fig. 5
+# right: rails alternate PWR/GND at 180nm, a PWR track drops vias only on PWR
+# rails, so consecutive vias on a track are 360nm apart with exactly ONE GND
+# rail between them (their "360" annotation). That geometry gives an area
+# density of 45000/(500*360) = 25%, not the 16.7% quoted in their text -- the
+# figure is taken as authoritative for geometry here, and the discrepancy is
+# left visible rather than reconciled by inventing a spacing.
+_OPRINS_NTSV_PITCH_Y_UM = 0.360
+_OPRINS_BPR_PITCH_UM = 0.180
+_OPRINS_BPR_WIDTH_UM = 0.030
+# [Oprins] Fig. 5 left, read carefully: the uTSV is 500nm tall and spans the
+# WHOLE thinned Si -- the lower ~100nm p-substrate plus the ~400nm well
+# region above it -- and the VDD rail then sits ON TOP of the via. The rails
+# are NOT embedded partway down the silicon with the via stopping short of
+# them (a first-pass reading, which made the via 350nm instead of 500nm and
+# put the rails inside the conduction path).
+_OPRINS_PSUB_UM = 0.100        # p substrate, below the wells
+_OPRINS_BPR_HEIGHT_UM = 0.150  # rail height, ABOVE the 500nm Si
+
+
 def bspdn_stack(name: str, si_um: float, si_material: str,
                  with_backside_metal: bool = True,
-                 carrier_um: float = _BSPDN_CARRIER_UM) -> StackProfile:
+                 carrier_um: float = _BSPDN_CARRIER_UM,
+                 metal_material: str = "Cu_thick",
+                 ntsv_xy_um: "Tuple[float, float] | None" = None) -> StackProfile:
     """Build a BSPDN backside stack + the shared real SKY130 devices/BEOL —
     the general form of BSPDN_STACK below, parametrized so
     SRAM_THERMAL_REPORT.md's validation benchmark can build the exact
@@ -246,15 +315,86 @@ def bspdn_stack(name: str, si_um: float, si_material: str,
         GdsLayerBand("bonding_interface", _BSPDN_BOND_UM, "SiO2", (), 0.10),
     ]
     if with_backside_metal:
+        # "lines": a backside metal RAIL is laterally continuous along its
+        # length — that lateral conduction is the whole point of it, and the
+        # mechanism behind [Oprins]' 27-30% reduction. See
+        # GdsLayerBand.synthetic_shape.
         bands.append(GdsLayerBand("backside_metal", _BSPDN_METAL_UM, "SiO2",
-                                   ((SYNTHETIC, "Cu_thick"),), 0.03,
-                                   synthetic_grid=(_BSPDN_METAL_PITCH_UM, _BSPDN_METAL_WIDTH_UM)))
+                                   ((SYNTHETIC, metal_material),), 0.03,
+                                   synthetic_grid=(_BSPDN_METAL_PITCH_UM, _BSPDN_METAL_WIDTH_UM),
+                                   synthetic_shape="lines"))
         # nTSVs only exist to land on a backside metal/BPR — no metal, no via.
         si_drawn = ((SYNTHETIC, "W"),)
-        si_grid = (_BSPDN_NTSV_PITCH_UM, _BSPDN_NTSV_WIDTH_UM)
+        ntsv_x = _BSPDN_NTSV_WIDTH_UM if ntsv_xy_um is None else ntsv_xy_um[0]
+        ntsv_y = None if ntsv_xy_um is None else ntsv_xy_um[1]
+        si_grid = (_BSPDN_NTSV_PITCH_UM, ntsv_x)
     else:
-        si_drawn, si_grid = (), None
-    bands.append(GdsLayerBand("Si_substrate", si_um, si_material, si_drawn, 0.02, synthetic_grid=si_grid))
+        si_drawn, si_grid, ntsv_y = (), None, None
+    # "posts": nTSVs are discrete vertical connectors, one per metal line
+    # ([Oprins]: nTSV pitch == M1 pitch) — deliberately NOT continuous.
+    bands.append(GdsLayerBand("Si_substrate", si_um, si_material, si_drawn, 0.02,
+                               synthetic_grid=si_grid, synthetic_shape="posts",
+                               synthetic_width_y_um=ntsv_y))
+    return StackProfile(name, tuple(bands) + _DEVICE_AND_BEOL_BANDS)
+
+
+def oprins_stack(name: str, si_um: float, si_material: str,
+                  with_backside_metal: bool = True,
+                  carrier_um: float = _BSPDN_CARRIER_UM,
+                  with_bpr: bool = True) -> StackProfile:
+    """[Oprins] iTherm 2022's via-last BS-PDN test case, built to match their
+    Fig. 5 cross-section and top view rather than approximating it:
+
+        carrier / bonding oxide
+        backside metal M1     Cu tracks, 250nm wide @ 500nm pitch, 210nm thick
+        thinned Si (lower)    uTSVs rise through it, 250 x 180nm @ 500 x 540nm
+        thinned Si (rails)    Ru buried power rails, 30nm @ 180nm pitch,
+                              running PERPENDICULAR to the M1 tracks
+        FEOL / BEOL
+
+    The Si is split into two bands so the rails sit at the DEVICE side and the
+    vias land on them from below, as in their figure -- not as a separate
+    oxide-backed layer inserted into the heat path, which is what a first
+    attempt did and which wrongly blocked conduction (net penalty 1.65x ->
+    2.67x). Both Si bands keep silicon as their background; only the drawn
+    features differ.
+    """
+    # Si splits into p substrate (bottom) + well region (above it); the uTSV
+    # runs through BOTH, i.e. the full si_um, and the rails sit on top.
+    psub_um = min(_OPRINS_PSUB_UM, si_um * 0.25)
+    well_um = si_um - psub_um
+
+    bands = [
+        GdsLayerBand("Si_carrier", carrier_um, "Si_bulk", (), 5.0),
+        GdsLayerBand("bonding_interface", _BSPDN_BOND_UM, "SiO2", (), 0.10),
+    ]
+    if with_backside_metal:
+        bands.append(GdsLayerBand("backside_metal", _BSPDN_METAL_UM, "SiO2",
+                                   ((SYNTHETIC, "Cu_oprins"),), 0.03,
+                                   synthetic_grid=(_BSPDN_METAL_PITCH_UM, _BSPDN_METAL_WIDTH_UM),
+                                   synthetic_shape="lines"))
+        via_drawn = ((SYNTHETIC, "W"),)
+        via_grid = (_BSPDN_METAL_PITCH_UM, _OPRINS_NTSV_X_UM)
+    else:
+        via_drawn, via_grid = (), None
+
+    via_kw = dict(synthetic_grid=via_grid, synthetic_shape="posts",
+                  synthetic_width_y_um=_OPRINS_NTSV_Y_UM,
+                  synthetic_pitch_y_um=_OPRINS_NTSV_PITCH_Y_UM,
+                  synthetic_stagger_y_um=_OPRINS_BPR_PITCH_UM)
+    # p substrate, then the well region -- the via passes through both
+    bands.append(GdsLayerBand("p_substrate", psub_um, si_material, via_drawn, 0.02, **via_kw))
+    bands.append(GdsLayerBand("well", well_um, si_material, via_drawn, 0.02, **via_kw))
+    if with_bpr:
+        # Buried power rails ON TOP of the Si: a VDD rail caps a uTSV, a VSS
+        # rail sits on the well. Background kept as silicon rather than oxide
+        # -- an oxide-backed band here is a continuous barrier across the
+        # whole heat path and wrongly doubles the penalty (measured: net
+        # 1.65x -> 2.67x).
+        bands.append(GdsLayerBand("buried_power_rail", _OPRINS_BPR_HEIGHT_UM, si_material,
+                                   ((SYNTHETIC, "Ru_oprins"),), 0.015,
+                                   synthetic_grid=(_OPRINS_BPR_PITCH_UM, _OPRINS_BPR_WIDTH_UM),
+                                   synthetic_shape="lines_perp"))
     return StackProfile(name, tuple(bands) + _DEVICE_AND_BEOL_BANDS)
 
 

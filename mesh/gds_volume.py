@@ -16,6 +16,7 @@ Assumes gmsh.initialize() and gmsh.model.add(...) have already been called;
 this module only adds OCC entities to the current model.
 """
 
+import math
 import time
 from typing import Dict, List, Tuple
 
@@ -47,22 +48,95 @@ def _window_rects(polys: List["gdstk.Polygon"], window: "gdstk.Polygon",
     return out
 
 
+def _grid_starts(lo: float, hi: float, pitch: float, width: float, anchor: float = None):
+    """Feature start coordinates tiling [lo, hi] at `pitch`. With `anchor`,
+    one feature is CENTRED on it and the rest step outward by pitch; without,
+    tiling simply begins at `lo`.
+
+    The anchor matters physically, not cosmetically: a via grid phased from
+    the window edge puts a via under the heat source only by luck, and the
+    whole backside-metal mechanism is about getting heat from the source into
+    a nearby via. [Oprins] Fig. 6 defines their small heat source AS "the
+    area contacted by a single uTSV to BPR", i.e. exactly one via under the
+    heater -- so the alignment is part of their test case, not a free
+    parameter.
+    """
+    if anchor is None:
+        starts, x = [], lo
+        while x < hi:
+            starts.append(x)
+            x += pitch
+        return starts
+    n_lo = int(math.floor((lo - (anchor - width / 2)) / pitch)) - 1
+    n_hi = int(math.ceil((hi - (anchor - width / 2)) / pitch)) + 1
+    return [anchor - width / 2 + n * pitch for n in range(n_lo, n_hi + 1)]
+
+
 def _synthetic_grid_rects(x0: float, y0: float, x1: float, y1: float,
-                           pitch_um: float, width_um: float):
-    """2D analogue of mesh/gds_section._synthetic_grid_intervals — a
-    width_um x width_um feature every pitch_um in both x and y (for backside
-    power delivery geometry that exists in no real GDS layer to read)."""
+                           pitch_um: float, width_um: float, shape: str = "lines",
+                           width_y_um: float = None, anchor_um=None,
+                           pitch_y_um: float = None, stagger_y_um: float = 0.0):
+    """2D analogue of mesh/gds_section._synthetic_grid_intervals, for backside
+    power delivery geometry that exists in no real GDS layer to read.
+
+    `shape` ("lines" | "posts") is load-bearing physics, not styling — see
+    gds.techmap.GdsLayerBand.synthetic_shape:
+      - "lines": continuous strips spanning y, repeating every pitch_um in x.
+        A backside metal rail conducts along its length; drawing it as
+        disconnected islands removes that lateral path entirely.
+      - "posts": width x width islands on a pitch grid in BOTH x and y. A
+        via/nTSV is a vertical connector and is genuinely not continuous.
+    The 2D cross-section path has no equivalent choice: its x-intervals
+    extrude along the unresolved axis, so they are always effectively lines.
+
+    `stagger_y_um` (posts only): shift every OTHER column by this much in y.
+    [Oprins] Fig. 5 shows a PWR backside track dropping uTSVs only onto PWR
+    buried rails and a GND track only onto GND rails, so vias on neighbouring
+    tracks sit on DIFFERENT rails -- a checkerboard, not a square grid. Since
+    the rails alternate every buried-rail pitch, the natural offset is one
+    rail pitch. This changes how much via area sits under a given heat
+    source, so it is geometry, not decoration.
+
+    `width_y_um` (posts only): a rectangular post, width_um x width_y_um,
+    for geometry that is genuinely not square -- [Oprins]' uTSV is 180 x 250
+    nm, whose 18% area fraction differs materially from the 25% a 250nm
+    square would give.
+    """
     out = []
-    x = x0
-    while x < x1:
-        rx0, rx1 = x, min(x + width_um, x1)
-        y = y0
-        while y < y1:
-            ry0, ry1 = y, min(y + width_um, y1)
-            if rx1 - rx0 > _EPS and ry1 - ry0 > _EPS:
-                out.append((rx0, ry0, rx1, ry1))
-            y += pitch_um
-        x += pitch_um
+    wy = width_um if width_y_um is None else width_y_um
+    py = pitch_um if pitch_y_um is None else pitch_y_um
+    ax = ay = None
+    if anchor_um is not None:
+        ax, ay = anchor_um
+    if shape == "lines_perp":
+        # rails running along x, repeating in y -- the transpose of "lines"
+        for y in _grid_starts(y0, y1, pitch_um, width_um, ay):
+            ry0, ry1 = max(y, y0), min(y + width_um, y1)
+            if ry1 - ry0 > _EPS and x1 - x0 > _EPS:
+                out.append((x0, ry0, x1, ry1))
+        return out
+    x_starts = _grid_starts(x0, x1, pitch_um, width_um, ax)
+    for x in x_starts:
+        rx0, rx1 = max(x, x0), min(x + width_um, x1)
+        if rx1 - rx0 <= _EPS:
+            continue
+        if shape == "lines":
+            if y1 - y0 > _EPS:
+                out.append((rx0, y0, rx1, y1))
+            continue
+        # Column parity is taken from the ANCHORED index, not this window's
+        # first column, so the checkerboard phase is a property of the
+        # structure rather than of where the window happens to be cut.
+        if ax is None:
+            col = int(round((x - x_starts[0]) / pitch_um))
+        else:
+            col = int(round((x - (ax - width_um / 2)) / pitch_um))
+        ay_col = None if ay is None else ay + (col % 2) * stagger_y_um
+        if True:
+            for y in _grid_starts(y0, y1, py, wy, ay_col):
+                ry0, ry1 = max(y, y0), min(y + wy, y1)
+                if ry1 - ry0 > _EPS:
+                    out.append((rx0, ry0, rx1, ry1))
     return out
 
 
@@ -72,7 +146,8 @@ def _window_contains(poly: "gdstk.Polygon", x0: float, y0: float, x1: float, y1:
 
 
 def emit_gds_3d_geometry(by_layer, channel_sources, contact_sources,
-                          window: Tuple[float, float, float, float], stack):
+                          window: Tuple[float, float, float, float], stack,
+                          grid_anchor_um=None):
     """`window` = (x0, x1, y0, y1) in um, the bounded lateral region to
     extrude (see cases/run_gds_3d.py for how it's sized). `stack` is a
     required gds.techmap.StackProfile (frontside or BSPDN).
@@ -98,7 +173,12 @@ def emit_gds_3d_geometry(by_layer, channel_sources, contact_sources,
         for key, material in band.drawn:
             if key is SYNTHETIC:
                 pitch_um, width_um = band.synthetic_grid
-                grid_rects = _synthetic_grid_rects(x0, y0, x1, y1, pitch_um, width_um)
+                grid_rects = _synthetic_grid_rects(x0, y0, x1, y1, pitch_um, width_um,
+                                                    band.synthetic_shape,
+                                                    band.synthetic_width_y_um,
+                                                    grid_anchor_um,
+                                                    band.synthetic_pitch_y_um,
+                                                    band.synthetic_stagger_y_um)
             else:
                 grid_rects = _window_rects(by_layer.get(key, []), window_poly, x0, y0, x1, y1)
             for rx0, ry0, rx1, ry1 in grid_rects:

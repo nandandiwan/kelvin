@@ -36,6 +36,7 @@ from gds.spice_netlist import N_ROWS
 from gds.spice_power import NAMED_BIAS_POINTS, named_bias_point_power_w
 from mesh.gds_build import build_gds_3d_mesh
 from physics.coeffs import build_coeffs
+from post.budget import power_balance, print_power_balance
 from post.metrics import tmax
 from solve.steady import solve_steady_from_fields
 from spec.chip import BoundaryConditions, SourceBox
@@ -96,6 +97,7 @@ def solve_operating_point(by_layer, window, channel_info, contact_sources, chip,
     T = solve_steady_from_fields(mesh_data, k_f, q_f, chip)
     tk, coords = tmax(T)
     print(f"  Tmax = {tk:.6f} K (dT = {tk-300.0:.6e} K)")
+    print_power_balance(power_balance(mesh_data, registry, chip, T, k_f, q_f, source_depth_m=None))
     return T, tk, coords
 
 

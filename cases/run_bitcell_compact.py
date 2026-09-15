@@ -28,6 +28,7 @@ maps to the same power regardless of which specific instance is which.
     python cases/run_bitcell_compact.py
 """
 
+import argparse
 import sys
 import types
 from pathlib import Path
@@ -42,6 +43,7 @@ from gds.sources import _dims_um, extract_channels, extract_contacts
 from gds.spice_power import named_bias_point_power_w
 from mesh.gds_build import build_gds_3d_mesh
 from mesh.viz3d import render_temperature_xy_slice, render_temperature_xz_slice
+from post.budget import power_balance, print_power_balance
 from post.metrics import tmax
 from solve.steady import solve_steady
 from spec.chip import BoundaryConditions, SourceBox
@@ -65,13 +67,27 @@ def _classify(x_ext, y_ext, is_left):
     return "pullup" if is_left else "access"  # X5/X6 : X0/X2
 
 
-def main():
+def run(pad_um: float = 0.0, refine: float = 1.0, out_dir: str = OUT_DIR, renders: bool = True):
+    """`pad_um`: widen the lateral window by this much on every side beyond
+    the real cell footprint, filled with plain background material (no real
+    neighboring-device geometry exists to put there -- see
+    mesh/gds_volume.py::emit_gds_3d_geometry, which fills the whole window
+    with `band.background` before punching in real polygons). pad_um=0.0
+    (default) reproduces the as-built array-periodic case (adiabatic
+    sidewalls sitting right at the cell edge, i.e. "every cell in the array
+    is equally hot"). pad_um>0 gives the heat room to spread laterally
+    before hitting the adiabatic cut, approximating an increasingly
+    isolated single hot cell in quiet surrounding silicon -- see
+    optimized-singing-creek.md's F2 finding for why this distinction
+    matters (99.3% of the as-built thermal resistance is the Robin BC over
+    the bare 1.9um^2 cell footprint, not conduction)."""
     lib = gdstk.read_gds(GDS_PATH)
     cell = next(c for c in lib.cells if c.name == CELL_NAME)
     by_layer = flatten_by_layer(cell)
     (x0, y0), (x1, y1) = cell.bounding_box()
-    window = (x0, x1, y0, y1)
-    print(f"bitcell window: {window}, size {x1-x0:.3f} x {y1-y0:.3f} um")
+    window = (x0 - pad_um, x1 + pad_um, y0 - pad_um, y1 + pad_um)
+    print(f"bitcell window: {window}, size {x1-x0+2*pad_um:.3f} x {y1-y0+2*pad_um:.3f} um "
+          f"(pad_um={pad_um}, refine={refine})")
 
     # The crowbar snapshot is a PEAK instantaneous condition (both pull-down
     # NMOS partially on simultaneously) -- real crowbar current only flows
@@ -122,7 +138,7 @@ def main():
 
     total_power_w = sum(b.power_uw for b, _ in channel_sources) * 1e-6
     mesh_data, registry = build_gds_3d_mesh(
-        by_layer, window, total_power_w, out_dir=OUT_DIR, refine=1.0, renders=True,
+        by_layer, window, total_power_w, out_dir=out_dir, refine=refine, renders=renders,
         stack=techmap.FRONTSIDE_STACK, channel_sources=channel_sources, contact_sources=contact_sources,
     )
 
@@ -130,17 +146,36 @@ def main():
     chip = types.SimpleNamespace(bcs=bcs)
     T, k, q = solve_steady(mesh_data, registry, chip, source_depth_m=None)
 
-    tmax_k, coords = tmax(T)
-    print(f"Tmax = {tmax_k:.6f} K (dT = {tmax_k-300.0:.6e} K) "
-          f"at x={coords[0]*1e6:.3f} y={coords[1]*1e6:.3f} z={coords[2]*1e6:.3f} um")
+    balance = power_balance(mesh_data, registry, chip, T, k, q, source_depth_m=None)
+    for tag, d in sorted(balance["per_tag"].items()):
+        print(f"[budget]   tag {tag} ({d['label']}): meshed/nominal volume ratio = {d['ratio']:.6f}")
+    print_power_balance(balance)
 
-    z_mid = coords[2] * 1e6
-    y_mid = (y0 + y1) / 2
-    render_temperature_xy_slice(T, z_mid, f"bitcell hotspot (compact-model power), z={z_mid:.2f}um",
-                                 f"{OUT_DIR}/T_xy_slice.png")
-    render_temperature_xz_slice(T, y_mid, f"bitcell hotspot (compact-model power), y={y_mid:.2f}um",
-                                 f"{OUT_DIR}/T_xz_slice.png", zoom_z_um=(z_mid - 3.0, z_mid + 1.0))
-    print(f"wrote {OUT_DIR}/T_xy_slice.png, {OUT_DIR}/T_xz_slice.png")
+    tmax_k, coords = tmax(T)
+    num_cells = mesh_data.mesh.topology.index_map(mesh_data.mesh.topology.dim).size_local
+    print(f"Tmax = {tmax_k:.6f} K (dT = {tmax_k-300.0:.6e} K) "
+          f"at x={coords[0]*1e6:.3f} y={coords[1]*1e6:.3f} z={coords[2]*1e6:.3f} um "
+          f"[{num_cells} cells]")
+
+    if renders:
+        z_mid = coords[2] * 1e6
+        y_mid = (y0 + y1) / 2
+        render_temperature_xy_slice(T, z_mid, f"bitcell hotspot (compact-model power), z={z_mid:.2f}um",
+                                     f"{out_dir}/T_xy_slice.png")
+        render_temperature_xz_slice(T, y_mid, f"bitcell hotspot (compact-model power), y={y_mid:.2f}um",
+                                     f"{out_dir}/T_xz_slice.png", zoom_z_um=(z_mid - 3.0, z_mid + 1.0))
+        print(f"wrote {out_dir}/T_xy_slice.png, {out_dir}/T_xz_slice.png")
+
+    return tmax_k, num_cells
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--pad-um", type=float, default=0.0)
+    p.add_argument("--refine", type=float, default=1.0)
+    p.add_argument("--out-dir", default=OUT_DIR)
+    args = p.parse_args()
+    run(pad_um=args.pad_um, refine=args.refine, out_dir=args.out_dir)
 
 
 if __name__ == "__main__":

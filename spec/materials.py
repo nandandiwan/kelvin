@@ -79,6 +79,24 @@ MATERIALS = {
     # k_si_thin_film_w_mk's docstring above for the real measured anchors.
     "Si_thin_300nm": Material("Si_thin_300nm", k=k_si_thin_film_w_mk(0.3), rho=2330.0, cp=712.0),
     "Si_thin_500nm": Material("Si_thin_500nm", k=k_si_thin_film_w_mk(0.5), rho=2330.0, cp=712.0),
+
+    # --- [Oprins] iTherm 2022's OWN published effective properties ---------
+    # Used ONLY to reproduce that paper's results with that paper's inputs,
+    # which is what validates the SOLVER (same inputs -> same answer?) as
+    # opposed to validating this project's own independent material choices.
+    # Keep them separate from the entries above rather than overwriting:
+    # Si_thin_* above is fitted to Liu & Asheghi's MEASURED thin-film data,
+    # while these come from Oprins' dedicated nanoscale Monte Carlo BTE
+    # simulations (their Fig. 9) -- different kinds of evidence, and the gap
+    # between them is itself a result worth reporting (107.6 vs 84.0 W/m-K at
+    # 500nm, i.e. the measured-data fit is 28% more conductive than the BTE
+    # value at this thickness).
+    #   Si 500nm : 84 W/m-K, stated as 56% of bulk           ([Oprins] Fig. 9)
+    #   Cu 250nm-wide backside metal: 330 W/m-K, 84% of bulk ([Oprins] Fig. 9)
+    #   Ru 30nm buried power rail:    110 W/m-K, 90% of bulk ([Oprins] Fig. 9)
+    "Si_oprins_500nm": Material("Si_oprins_500nm", k=84.0,  rho=2330.0, cp=712.0),
+    "Cu_oprins":       Material("Cu_oprins",       k=330.0, rho=8940.0, cp=385.0),   # Table 2
+    "Ru_oprins":       Material("Ru_oprins",       k=110.0, rho=12450.0, cp=238.0),
     # Degenerately-doped source/drain silicon: ionized-impurity phonon scattering
     # knocks k down from bulk even though it's still a ~30nm-thick crystalline film.
     "Si_SD_doped":  Material("Si_SD_doped",  k=70.0,  rho=2330.0,  cp=712.0, k_texp=-1.3),

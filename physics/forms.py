@@ -18,7 +18,7 @@ def steady_form(mesh, facet_tags, k, q, chip):
     a = k * ufl.inner(ufl.grad(u), ufl.grad(v)) * dx
     L = q * v * dx
 
-    a_robin, l_robin = robin_terms(u, v, ds, chip)
+    a_robin, l_robin = robin_terms(u, v, ds, chip, k=k)
     a = a + a_robin
     L = L + l_robin
 

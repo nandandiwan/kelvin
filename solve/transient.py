@@ -48,7 +48,7 @@ class TransientHeatSolver:
 
         mass = (rho_cp / self._dt) * u * v * dx
         stiffness = k * ufl.inner(ufl.grad(u), ufl.grad(v)) * dx
-        a_robin, l_robin = robin_terms(u, v, ds, chip)
+        a_robin, l_robin = robin_terms(u, v, ds, chip, k=k)
         a = mass + stiffness + a_robin
         L = (rho_cp / self._dt) * self.T_prev * v * dx + self.q * v * dx + l_robin
 

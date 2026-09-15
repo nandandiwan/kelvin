@@ -219,14 +219,14 @@ def write_bias_op_deck(out_path: str, wl: float, bl: float, br: float, q: float,
         ".op",
         ".control",
         "run",
-        "print @m.x0.x0.msky130_fd_pr__special_nfet_pass[id]",
-        "print @m.x0.x1.msky130_fd_pr__special_nfet_latch[id]",
-        "print @m.x0.x2.msky130_fd_pr__special_nfet_pass[id]",
-        "print @m.x0.x3.msky130_fd_pr__special_pfet_pass[id]",
-        "print @m.x0.x4.msky130_fd_pr__special_pfet_pass[id]",
-        "print @m.x0.x5.msky130_fd_pr__special_pfet_pass[id]",
-        "print @m.x0.x6.msky130_fd_pr__special_pfet_pass[id]",
-        "print @m.x0.x7.msky130_fd_pr__special_nfet_latch[id]",
+        "print i(vvdd)",
+        "print i(vvss)",
+        "print i(vwl)",
+        "print i(vbl)",
+        "print i(vbr)",
+        "print i(vq)",
+        "print i(vqb)",
+    ] + _device_print_lines() + [
         ".endc",
         ".end",
     ]
@@ -269,14 +269,12 @@ def write_selfconsistent_op_deck(out_path: str, wl: float, bl: float, br: float,
         ".op",
         ".control",
         "run",
-        "print @m.x0.x0.msky130_fd_pr__special_nfet_pass[id]",
-        "print @m.x0.x1.msky130_fd_pr__special_nfet_latch[id]",
-        "print @m.x0.x2.msky130_fd_pr__special_nfet_pass[id]",
-        "print @m.x0.x3.msky130_fd_pr__special_pfet_pass[id]",
-        "print @m.x0.x4.msky130_fd_pr__special_pfet_pass[id]",
-        "print @m.x0.x5.msky130_fd_pr__special_pfet_pass[id]",
-        "print @m.x0.x6.msky130_fd_pr__special_pfet_pass[id]",
-        "print @m.x0.x7.msky130_fd_pr__special_nfet_latch[id]",
+        "print i(vvdd)",
+        "print i(vvss)",
+        "print i(vwl)",
+        "print i(vbl)",
+        "print i(vbr)",
+    ] + _device_print_lines() + [
         "print v(x0.q)",
         "print v(x0.qb)",
         ".endc",
@@ -284,6 +282,40 @@ def write_selfconsistent_op_deck(out_path: str, wl: float, bl: float, br: float,
     ]
     _write(out_path, lines)
     return out_path
+
+
+# (instance, ngspice model suffix) for the 8 devices in sram_sp_cell, in
+# netlist order. X3/X4 are declared as *_shortl in data/sram_sp_cell.spice but
+# ngspice reports them under the plain special_pfet_pass name (verified against
+# real output, not assumed) -- gds/spice_power.py::_DEVICES relies on the same.
+_DEVICE_MODELS = [
+    ("x0", "nfet_pass"), ("x1", "nfet_latch"), ("x2", "nfet_pass"),
+    ("x3", "pfet_pass"), ("x4", "pfet_pass"), ("x5", "pfet_pass"),
+    ("x6", "pfet_pass"), ("x7", "nfet_latch"),
+]
+
+
+def _device_print_lines():
+    """`id` plus the two bulk-junction currents for every device.
+
+    `ibd`/`ibs` are NOT redundant with `id`: `id` is the CHANNEL current only,
+    so `|id * vds|` misses the power dissipated in the reverse-biased
+    drain-bulk and source-bulk junctions. At an ON operating point that
+    omission is invisible (channel current dominates by ~7 orders), but in
+    HOLD the channel current IS leakage-scale and the junctions carry ~98% of
+    the dissipation -- a channel-only sum closes Tellegen's theorem to a ratio
+    of 0.018, not 1.0. See gds/spice_power.py::device_power_breakdown_w.
+
+    BSIM3 exposes no `ig`/`is`/`ib` instance vectors in this ngspice build
+    (checked directly: "Error: no such parameter ig"), so `ibd`/`ibs` are the
+    available junction terms and they are sufficient -- they close the balance
+    to 1.0000 at every named bias point.
+    """
+    lines = []
+    for inst, model in _DEVICE_MODELS:
+        dev = f"@m.x0.{inst}.msky130_fd_pr__special_{model}"
+        lines += [f"print {dev}[{term}]" for term in ("id", "ibd", "ibs")]
+    return lines
 
 
 def _write(path, lines):

@@ -92,7 +92,8 @@ def build_gds_2d_mesh(by_layer, cut_y_um: float, total_power_w: float, out_dir: 
 
 def build_gds_3d_mesh(by_layer, window, total_power_w: float, out_dir: str = "out/gds3d",
                        refine: float = 1.0, renders: bool = True, stack=None,
-                       channel_sources=None, contact_sources=None):
+                       channel_sources=None, contact_sources=None,
+                       uniform_background: bool = False, grid_anchor_um=None):
     """3D analogue of build_gds_2d_mesh: extrudes real device geometry within
     a bounded lateral `window=(x0,x1,y0,y1)` (not the whole die — see
     cases/run_gds_3d.py for sizing it) into full 3D. `stack` selects a
@@ -115,8 +116,10 @@ def build_gds_3d_mesh(by_layer, window, total_power_w: float, out_dir: str = "ou
     gmsh.model.add("gds_volume")
 
     registry, label_to_volumes, layer_to_volumes, x_bounds, y_bounds, z_bounds, feature_points = \
-        volume_mod.emit_gds_3d_geometry(by_layer, channel_sources, contact_sources, window, stack_obj)
-    sizing_mod.apply_gds_3d_sizing(*x_bounds, *y_bounds, feature_points, refine=refine, stack=stack_obj)
+        volume_mod.emit_gds_3d_geometry(by_layer, channel_sources, contact_sources, window, stack_obj,
+                                        grid_anchor_um=grid_anchor_um)
+    sizing_mod.apply_gds_3d_sizing(*x_bounds, *y_bounds, feature_points, refine=refine,
+                                    stack=stack_obj, uniform_background=uniform_background)
 
     _tag_material_regions(registry, label_to_volumes, dim=3)
     _tag_facets_3d(x_bounds, y_bounds, z_bounds)

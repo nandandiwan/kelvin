@@ -114,8 +114,20 @@ def _band_field(by_layer, band, x_edges, y_edges, prop: str) -> np.ndarray:
         mat_val = getattr(get_material(material), prop)
         if key is SYNTHETIC:
             pitch, width = band.synthetic_grid
-            frac = min(1.0, (width / pitch) ** 2)
-            frac_field = frac  # scalar broadcasts
+            # Area fraction must match what the 3D emitter actually draws
+            # (mesh/gds_volume.py::_synthetic_grid_rects): continuous strips
+            # repeating in x only cover width/pitch of the area; discrete
+            # posts on a grid in BOTH axes cover (width/pitch)^2. Squaring a
+            # line band would understate its metal fraction by pitch/width
+            # (2x at [Oprins]' 500nm pitch / 250nm width).
+            ratio = width / pitch
+            if band.synthetic_shape in ("lines", "lines_perp"):
+                frac = ratio
+            else:  # posts, possibly rectangular (see GdsLayerBand.synthetic_width_y_um)
+                wy = band.synthetic_width_y_um or width
+                py = band.synthetic_pitch_y_um or pitch
+                frac = ratio * (wy / py)
+            frac_field = min(1.0, frac)  # scalar broadcasts
         else:
             frac_field = rasterize_area_fraction(_rect_bboxes(by_layer.get(key, [])), x_edges, y_edges)
         field = field * (1 - frac_field) + mat_val * frac_field

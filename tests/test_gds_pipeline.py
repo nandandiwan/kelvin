@@ -12,14 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import math
 
 import pytest
-import ufl
-from dolfinx.fem import assemble_scalar, form
 
 from gds.read import load_top_cell, flatten_by_layer, named_cell_bbox_um
 from gds.sources import build_heat_sources, CHANNEL_POWER_FRAC, CONTACT_POWER_FRAC
-from mesh.build import FACET_BOTTOM, FACET_TOP
 from mesh.gds_build import build_gds_2d_mesh
 from mesh.gds_section import die_bounds
+from post.budget import power_balance
 from solve.steady import solve_steady
 from spec.chip import BoundaryConditions
 
@@ -72,17 +70,14 @@ def test_gds_energy_conservation(tmp_path, top_h_eff):
     chip = types.SimpleNamespace(bcs=bcs)
     T, k, q = solve_steady(mesh_data, registry, chip, source_depth_m=depth_m)
 
-    mesh = mesh_data.mesh
-    dx = ufl.Measure("dx", domain=mesh)
-    ds = ufl.Measure("ds", domain=mesh, subdomain_data=mesh_data.facet_tags)
-
-    p_gen = assemble_scalar(form(q * dx))
-    assert p_gen > 0
-    p_out_robin = assemble_scalar(form(bcs.backside_h_eff * (T - bcs.ambient_t_k) * ds(FACET_BOTTOM)))
-    if bcs.top_h_eff is not None:
-        p_out_robin += assemble_scalar(form(bcs.top_h_eff * (T - bcs.ambient_t_k) * ds(FACET_TOP)))
-    rel_err = abs(p_out_robin - p_gen) / abs(p_gen)
-    assert rel_err < 1e-6, f"p_gen={p_gen}, p_out_robin={p_out_robin}, rel_err={rel_err}"
+    balance = power_balance(mesh_data, registry, chip, T, k, q, source_depth_m=depth_m)
+    assert balance["p_gen_w"] > 0
+    assert balance["robin_rel_err"] < 1e-6, balance
+    # Real audit finding (optimized-singing-creek.md F3): the old check here
+    # only verified p_gen == p_out_robin (the Galerkin identity at v=1, which
+    # holds by construction for ANY q) -- it never verified p_gen equals the
+    # INTENDED total source power. This does.
+    assert abs(balance["p_gen_vs_intended"] - 1.0) < 1e-3, balance
 
     tmax = float(T.x.array.max())
     assert 300.0 < tmax < 400.0, f"Tmax={tmax} outside physically sane range for 1mW/{depth_m*1e6:.1f}um depth"

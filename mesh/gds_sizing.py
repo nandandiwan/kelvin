@@ -57,15 +57,32 @@ FEATURE_DIST_MAX_UM = 0.20
 
 
 def apply_gds_3d_sizing(x0: float, x1: float, y0: float, y1: float,
-                         feature_points, refine: float = 1.0, stack=None) -> None:
+                         feature_points, refine: float = 1.0, stack=None,
+                         uniform_background: bool = False) -> None:
     """`feature_points`: {band_name: [(x_um, y_um), ...]} from
     mesh.gds_volume.emit_gds_3d_geometry's return value.
+
+    `uniform_background=True`: size each band's background from its own
+    `mesh_size_um` REGARDLESS of whether that band happens to contain drawn
+    features. Needed whenever several stacks are compared against each other,
+    because the default (feature-dependent) rule silently meshes them
+    differently: a band with features gets a `min(4x, COARSE_3D_UM)` coarsened
+    background, while the same band with NO features keeps the full nm-scale
+    `mesh_size_um` across the entire window. Measured directly on the BSPDN
+    benchmark -- config B (no backside metal, so no features in Si_substrate)
+    came out at 4.33M cells against config C's 2.04M, a 4x-finer background in
+    exactly the thin-Si band whose behaviour the comparison is about, turning
+    a resolution difference into a fake physics result. Single-stack callers
+    should leave this False and keep the cheaper feature-driven grading.
     """
     field_ids = []
     for z0, z1, band in z_bounds(stack):
         feature_size = band.mesh_size_um * refine
         points_xy = feature_points.get(band.name, [])
-        band_size = min(feature_size * 4, COARSE_3D_UM) if points_xy else feature_size
+        if uniform_background:
+            band_size = min(feature_size * 4, COARSE_3D_UM)
+        else:
+            band_size = min(feature_size * 4, COARSE_3D_UM) if points_xy else feature_size
 
         box = gmsh.model.mesh.field.add("Box")
         gmsh.model.mesh.field.setNumber(box, "VIn", band_size)

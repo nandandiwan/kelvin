@@ -47,6 +47,23 @@ _DEVICES = {
     "X7": ("m.x0.x7.msky130_fd_pr__special_nfet_latch", "vss", "qb"),
 }
 
+# Bulk node per device, from data/sram_sp_cell.spice's 4th terminal (VNB for
+# the NMOS, VPB for the PMOS) and the instance line in gds/spice_netlist.py,
+# which ties VNB->VSS and VPB->VDD.
+_DEVICE_BULK = {
+    "X0": "vss", "X1": "vss", "X2": "vss", "X7": "vss",
+    "X3": "vdd", "X4": "vdd", "X5": "vdd", "X6": "vdd",
+}
+
+# Roles, for figures and for mapping onto channel geometry. Matches
+# cases/run_bitcell_compact.py::_classify's width/length-based classification.
+DEVICE_ROLE = {
+    "X0": "access", "X2": "access",
+    "X1": "latch (pull-down NMOS)", "X7": "latch (pull-down NMOS)",
+    "X5": "pull-up PMOS", "X6": "pull-up PMOS",
+    "X3": "parasitic (D=S)", "X4": "parasitic (D=S)",
+}
+
 NGSPICE = "/home/nandan_diwan/miniforge3/envs/thermals/bin/ngspice"
 
 
@@ -154,6 +171,62 @@ def selfconsistent_device_power_w(wl: float, bl: float, br: float, q_guess: floa
     return power
 
 
+def device_power_breakdown_w(name: str) -> dict:
+    """{device: {"channel_w": .., "junction_w": ..}} for one named bias point.
+
+    Splits each device's dissipation into the two physically distinct paths a
+    BSIM3 device has at DC:
+
+      channel  = |Id * Vds|            -- the inversion-layer current, the
+                 term every other function in this file uses, and the one
+                 that maps onto the channel GEOMETRY in the thermal solve.
+      junction = |Ibd * Vdb| + |Ibs * Vsb|  -- reverse-biased drain-bulk and
+                 source-bulk diode leakage. Dissipated at the S/D diffusions,
+                 not in the channel.
+
+    Why this exists: `verify_energy_balance` originally summed only the
+    channel term and found ratio=1.0000 for READ and CROWBAR but 0.0181 for
+    HOLD and 0.0023 for a settled WRITE. That was not a solver bug and not
+    noise -- it is exactly this missing term. At an ON point the channel
+    dominates by ~7 orders so the omission is invisible; in HOLD the channel
+    current is itself leakage-scale, and the junctions carry ~98% of the
+    (femtowatt) total. Adding them closes Tellegen's theorem to 1.0000 at
+    ALL FOUR points.
+
+    Deliberately NOT folded into named_bias_point_power_w: that function feeds
+    the thermal solve, which places power on channel geometry, and junction
+    power belongs at the diffusions instead. Folding it in would move heat to
+    the wrong place to fix an error that is 8 orders of magnitude below the
+    crowbar power the thermal results actually use (4.2e-13 W vs 1.9e-5 W).
+    Kept separate, reported honestly, and used for the conservation figure.
+    """
+    wl, bl, br, q, qb, kind = NAMED_BIAS_POINTS[name]
+    with tempfile.TemporaryDirectory() as tmp:
+        if kind == "forced":
+            out = _run(write_bias_op_deck(f"{tmp}/bias.sp", wl, bl, br, q, qb))
+            q_actual, qb_actual = q, qb
+        else:
+            out = _run(write_selfconsistent_op_deck(f"{tmp}/sc.sp", wl, bl, br, q, qb))
+            q_actual = _last_print_value(out, "v(x0.q)")
+            qb_actual = _last_print_value(out, "v(x0.qb)")
+
+    node_v = {"vdd": VDD, "vss": 0.0, "bl": bl, "br": br, "wl": wl,
+              "q": q_actual, "qb": qb_actual}
+
+    breakdown = {}
+    for dev, (path, d_node, s_node) in _DEVICES.items():
+        b_node = _DEVICE_BULK[dev]
+        i_d = _last_print_value(out, f"@{path}[id]")
+        i_bd = _last_print_value(out, f"@{path}[ibd]")
+        i_bs = _last_print_value(out, f"@{path}[ibs]")
+        breakdown[dev] = {
+            "channel_w": abs(i_d * (node_v[d_node] - node_v[s_node])),
+            "junction_w": (abs(i_bd * (node_v[d_node] - node_v[b_node]))
+                           + abs(i_bs * (node_v[s_node] - node_v[b_node]))),
+        }
+    return breakdown
+
+
 # Named operating points for cases/run_bitcell_gallery.py -- (wl, bl, br,
 # q_guess, qb_guess, kind). "selfconsistent" points use the guess only as a
 # nodeset hint (the solver finds the real Q/QB); "forced" points (crowbar
@@ -248,6 +321,79 @@ def named_bias_point_power_w(name: str, row_hit_rate: float = 1.0, lib_path: str
     # row_hit_rate alone doing the work of "how often that happens."
     duty = min(1.0, timing.clk_to_q_access_ns / timing.min_period_ns) * row_hit_rate
     return {k: v * duty for k, v in raw.items()}
+
+
+def supply_power_w(name: str) -> float:
+    """sum(|V_src * I_src|) over EVERY ideal source in the deck (VDD, VSS,
+    WL, BL, BR, and for the forced/crowbar variant also Q, QB) -- this, not
+    "current through VDD alone," is the correct conservation law here
+    (Tellegen's theorem: total power delivered by all independent sources
+    equals total power dissipated in the rest of the network at a DC
+    operating point). Checking VDD alone was tried first and is WRONG for
+    this circuit: BL/BR/WL are separately-driven ideal sources in this
+    single-cell testbench, and the dominant current path for e.g. a READ
+    (precharged bitline -> access transistor -> internal node -> pulldown
+    -> VSS) never touches the VDD net at all -- confirmed directly: a
+    VDD-only check gave nonsensical ratios (3,000,000x for read_1) purely
+    from this modeling error, not from any real bug in the power numbers.
+    """
+    wl, bl, br, q, qb, kind = NAMED_BIAS_POINTS[name]
+    with tempfile.TemporaryDirectory() as tmp:
+        if kind == "forced":
+            out = _run(write_bias_op_deck(f"{tmp}/bias.sp", wl, bl, br, q, qb))
+            sources = {"vvdd": VDD, "vvss": 0.0, "vwl": wl, "vbl": bl, "vbr": br, "vq": q, "vqb": qb}
+        else:
+            out = _run(write_selfconsistent_op_deck(f"{tmp}/sc.sp", wl, bl, br, q, qb))
+            sources = {"vvdd": VDD, "vvss": 0.0, "vwl": wl, "vbl": bl, "vbr": br}
+    return sum(abs(v * _last_print_value(out, f"i({name_})")) for name_, v in sources.items())
+
+
+def verify_energy_balance() -> dict:
+    """P0.2 audit check: does sum(per-device |Id*Vds|) match the total power
+    delivered by every ideal source (supply_power_w, Tellegen's theorem),
+    at the RAW (un-duty-scaled) level where the electrical physics actually
+    lives -- duty-cycle scaling (named_bias_point_power_w) applies
+    identically to every device and to every source alike, so it would
+    cancel in the ratio and hide nothing; checking pre-scaling is simpler
+    and more direct.
+
+    Reports TWO ratios, because the channel-only one is incomplete by
+    construction (see device_power_breakdown_w):
+
+      ratio_channel  sum(|Id*Vds|) / sum(sources). Closes at ON points
+                     (READ, CROWBAR) and fails badly at leakage-scale points
+                     (HOLD 0.018, WRITE 0.002) -- the missing power is
+                     bulk-junction leakage, not a bug.
+      ratio_full     channel + junction terms. Closes at ALL FOUR points.
+
+    `bias_device_power_w`'s own docstring (crowbar/forced path) warns of an
+    artificial current path through the ideal Q/QB sources when they fight
+    externally-driven access transistors -- this check catches exactly
+    that: crowbar is the one point where sum(device) may legitimately fall
+    short of sum(all sources) (some current flows through VQ/VQB itself,
+    not through the 8 counted channel devices), so its ratio is reported
+    but not held to the same bar. HOLD/WRITE/READ (self-consistent, no
+    forced Q/QB) are real KCL nodes with no such escape hatch and SHOULD
+    match closely.
+    """
+    results = {}
+    for name, (wl, bl, br, q, qb, kind) in NAMED_BIAS_POINTS.items():
+        bd = device_power_breakdown_w(name)
+        p_channel = sum(d["channel_w"] for d in bd.values())
+        p_junction = sum(d["junction_w"] for d in bd.values())
+        p_supply = supply_power_w(name)
+        r_ch = p_channel / p_supply if p_supply else float("nan")
+        r_full = (p_channel + p_junction) / p_supply if p_supply else float("nan")
+        results[name] = {
+            "p_channel_w": p_channel, "p_junction_w": p_junction,
+            "p_devices_w": p_channel + p_junction, "p_supply_w": p_supply,
+            "ratio_channel": r_ch, "ratio_full": r_full, "kind": kind,
+            "breakdown": bd,
+        }
+        print(f"{name:18s} kind={kind:16s} channel={p_channel:11.4e} W  "
+              f"junction={p_junction:11.4e} W  sources={p_supply:11.4e} W  "
+              f"ratio(channel)={r_ch:8.4f}  ratio(full)={r_full:.4f}")
+    return results
 
 
 def gate_check(lib_path: str = "data/sram22_2048x8m8w1_tt_025C_1v80.lib", num_rows: int = 2048):
