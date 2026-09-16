@@ -246,11 +246,81 @@ def _inferno_hex(t: float) -> str:
 
 
 
-def build_layer_regions(by_layer, stack, window=None) -> List[dict]:
+SUBSTRATE_DEPTHS_UM = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+
+
+def substrate_regions(stack, window, tag_start: int = 0,
+                      depths_um=SUBSTRATE_DEPTHS_UM, color: str = "#6b7a85") -> List[dict]:
+    """Slabs of the SILICON SUBSTRATE beneath the device stack, as extra
+    regions in the same schema the layer regions use.
+
+    Why this exists: the drawn GDS layers span only ~3.2um (z 50.21 -> 53.37
+    for the frontside stack) while the substrate under them is **50.2um** --
+    94% of the model, and the entire path the heat actually takes. Rendering
+    only the tagged layers makes every heat animation look like the heat is
+    "stuck" in the bottom drawn layer, when really it is leaving downward
+    through silicon that was never drawn.
+
+    Sliced into progressively thicker slabs (fine near the devices, coarse
+    with depth) rather than one block, so an animation can show the thermal
+    front moving DOWN through them: at nanosecond timescales the diffusion
+    length is sub-micron, so only the top slab warms; approaching steady
+    state the whole depth develops the near-linear conduction profile.
+
+    `depths_um` are depths BELOW the top of the substrate, cumulative.
+    """
+    from gds.techmap import z_bounds
+
+    x0, x1, y0, y1 = window
+    z_sub_top = z_sub_bot = None
+    for z0, z1, band in z_bounds(stack):
+        if band.name == "Si_substrate":
+            z_sub_bot, z_sub_top = z0, z1
+            break
+    if z_sub_top is None:
+        return []
+
+    regions, tag, prev = [], tag_start, z_sub_top
+    for d in depths_um:
+        z_lo = max(z_sub_bot, z_sub_top - d)
+        if z_lo >= prev - 1e-9:
+            continue
+        regions.append({
+            "physical_tag": tag,
+            "name": f"substrate {z_sub_top - prev:g}-{z_sub_top - z_lo:g}um deep",
+            "role": "substrate", "color": color,
+            "z_min_um": round(z_lo, 4), "z_max_um": round(prev, 4),
+            "volumes": [{"footprint_xy_um": [(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
+                         "area_um2": (x1 - x0) * (y1 - y0)}],
+            "source_polygon_count": 1, "placeholder": False, "material": "Si_bulk",
+        })
+        tag += 1
+        prev = z_lo
+        if z_lo <= z_sub_bot + 1e-9:
+            break
+    return regions
+
+
+def build_layer_regions(by_layer, stack, window=None, include_substrate: bool = False,
+                        substrate_depths_um=SUBSTRATE_DEPTHS_UM) -> List[dict]:
     """Public wrapper over _build_regions: one region per real layer, each
     with its real clipped polygons. Built ONCE and reused across animation
-    frames -- the geometry never moves, only the per-volume values do."""
-    return _build_regions(by_layer, stack, window)
+    frames -- the geometry never moves, only the per-volume values do.
+
+    `include_substrate` appends `substrate_regions` slabs below the stack --
+    needed for any figure meant to show where the heat actually GOES, since
+    the drawn layers are only the top 6% of the model (see that function).
+    Requires an explicit `window`: the substrate has no polygons of its own
+    to infer a footprint from.
+    """
+    regions = _build_regions(by_layer, stack, window)
+    if include_substrate:
+        if window is None:
+            raise ValueError("include_substrate needs an explicit window "
+                             "(the substrate has no polygons to infer one from)")
+        regions = regions + substrate_regions(stack, window, tag_start=len(regions),
+                                              depths_um=substrate_depths_um)
+    return regions
 
 
 def dof_indices_per_volume(regions: List[dict], dof_coords_um, z_pad_um: float = 0.05):
@@ -290,7 +360,7 @@ def dof_indices_per_volume(regions: List[dict], dof_coords_um, z_pad_um: float =
 
 
 def render_layer_regions_svg(regions: List[dict], clim, title: str, scale_label: str,
-                              width: int = 1180) -> str:
+                              width: int = 1180, z_exaggeration: float = None) -> str:
     """Two-panel figure in the same style as make_geometry_svg -- 2D mask
     plan on the left, painter-sorted isometric stack on the right -- but
     each individual polygon is filled from its own `volume["value"]` via
@@ -325,7 +395,12 @@ def render_layer_regions_svg(regions: List[dict], clim, title: str, scale_label:
     lateral = max(xspan, yspan)
     zmin = min(r["z_min_um"] for r in regions)
     zmax = max(r["z_max_um"] for r in regions)
-    z_exaggeration = min(3.0, max(1.0, 0.42 * lateral / max(zmax - zmin, 1e-12)))
+    # Same override as render_regions_geometry_svg: the automatic rule assumes
+    # a stack roughly as tall as it is wide, and returns 1.0 once the substrate
+    # is included (53um of depth over a 1.6-6um footprint), which renders as an
+    # unreadable needle. Callers drawing substrate pass their own value.
+    if z_exaggeration is None:
+        z_exaggeration = min(3.0, max(1.0, 0.42 * lateral / max(zmax - zmin, 1e-12)))
 
     panel_y, panel_h, panel_w, margin = 92, 500, 520, 55
     height = 660
