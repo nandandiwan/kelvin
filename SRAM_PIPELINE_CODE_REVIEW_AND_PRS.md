@@ -4,6 +4,16 @@ Reviewed working-tree snapshot: **2026-09-17**.
 
 This document explains the implementation that currently exists, then divides it into **13 proposed, dependency-ordered pull requests**. Each numbered section is both a conceptual explanation and a PR review packet. These are proposed PRs, not PRs already opened or commits already created. No simulation implementation is changed by this document.
 
+**Publication decision (2026-09-20):** the current updates are being prepared as
+**one draft PR with 13 review sections**, not 13 separate GitHub PRs. The numbered
+packets and dependency graph below remain the conceptual review guide; proposed
+branch names are retained only as a possible future split. See
+[SRAM_REVIEW_PR.md](SRAM_REVIEW_PR.md) for the single-PR scope and checklist.
+F01–F06 remain outstanding accuracy work, not completed changes in this PR.
+The repository-local notebook is included for standalone-clone use. Legacy array
+examples added upstream are preserved and adapted to per-instance source IDs;
+this does not migrate their electrical or geometry models to the canonical flow.
+
 The scope is the SRAM simulation. Shared Kelvin infrastructure is included only where the SRAM path calls it. Synthetic-device studies, Oprins benchmarks, backside-power-delivery experiments, and unrelated material experiments are not part of this review series.
 
 ## 1. Scope, terminology, and reading order
@@ -23,7 +33,7 @@ The primary supported routes are:
 | Steady temperature | [cases/run_bitcell_compact.py](cases/run_bitcell_compact.py), `run()` / `main()` | Integrate SPICE event energies, convert them to average powers, then solve a steady heat equation. |
 | Single-access thermal transient | [cases/run_bitcell_transient.py](cases/run_bitcell_transient.py), `main()` with `--instantaneous` | Transfer the time-resolved SPICE powers conservatively, then apply zero-source cooldown. |
 | Sustained-average thermal transient | Same driver, without `--instantaneous` | Turn on the event-averaged powers for a prescribed duration, then turn them off. This is not a sequence of individually resolved electrical accesses. |
-| Notebook | [../read_gds.ipynb](../read_gds.ipynb), SRAM configuration and final launch cell | Construct and inspect geometry, publish a sealed mesh bundle, optionally launch the steady CLI using that mesh. |
+| Notebook | [read_gds.ipynb](read_gds.ipynb), SRAM configuration and final launch cell | Construct and inspect geometry, publish a sealed mesh bundle, optionally launch the steady CLI using that mesh. |
 
 The steady route is the main route for the current steady-state study. The transient route remains in this document because it shares the electrical, geometry, and source-transfer implementation and is important for reviewing conservation.
 
@@ -545,7 +555,7 @@ The constraint search temporarily normalizes coordinates because library search 
 
 For a single access, `spice_thermal_time_grid()` spans the complete electrical trace with uniform thermal intervals no longer than the requested maximum. Each step receives the exact piecewise-linear SPICE energy for that interval divided by dt. It saves the actual temperature history and source-step data, then uses increasing timesteps for zero-source cooling. For sustained-average mode it instead applies constant event-averaged powers over a schedule. The schedule length is not a measured thermal time constant.
 
-**Notebook handoff:** [../read_gds.ipynb](../read_gds.ipynb), sections “Configuration,” “Construct non-overlapping 3D material and source regions,” “Build and validate the conformal Gmsh mesh,” and “Run Kelvin with this saved SRAM mesh.” `install_helpers()` provides the shared implementation; the final cell passes the sealed manifest to the steady CLI. `RUN_KELVIN_SRAM=False` is the current guard, and `KELVIN_PYTHON` can select an external DOLFINx interpreter. The notebook is not executed by the solver to recover geometry code.
+**Notebook handoff:** [read_gds.ipynb](read_gds.ipynb), sections “Configuration,” “Construct non-overlapping 3D material and source regions,” “Build and validate the conformal Gmsh mesh,” and “Run Kelvin with this saved SRAM mesh.” `install_helpers()` provides the shared implementation; the final cell passes the sealed manifest to the steady CLI. `RUN_KELVIN_SRAM=False` is the current guard, and `KELVIN_PYTHON` can select an external DOLFINx interpreter. The notebook is not executed by the solver to recover geometry code.
 
 **Artifacts reviewers must trace:**
 

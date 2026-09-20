@@ -333,7 +333,7 @@ The clean reference drawing from [mesh/gds_svg_viz.py](mesh/gds_svg_viz.py)
 renders original polygons. **A faithful-looking geometry SVG does not prove
 that the old solver mesh has those same footprints.**
 
-The [notebook](../read_gds.ipynb) and SRAM drivers now share
+The [notebook](read_gds.ipynb) and SRAM drivers now share
 [mesh/gds_notebook.py](mesh/gds_notebook.py), rather than maintaining separate
 geometry implementations. [mesh/sram.py](mesh/sram.py) adds the SRAM-specific
 stack configuration, exact source-polygon/instance correspondence and saved-mesh

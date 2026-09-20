@@ -24,16 +24,16 @@ import gmsh
 import numpy as np
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK = ROOT / "read_gds.ipynb"
 LAYER_NAMES = ("nwell", "diff", "poly", "licon1", "li1", "mcon", "met1", "via", "met2")
 
 
 def load_notebook_functions():
     """Compatibility name for older visualization scripts; no notebook AST."""
-    sys.path.insert(0, str(ROOT / "kelvin"))
+    sys.path.insert(0, str(ROOT))
     from mesh.gds_notebook import create_context
-    return create_context(ROOT=ROOT)
+    return create_context(ROOT=ROOT, DATA_DIR=ROOT / "data")
 
 
 def model_arrays(dimension):
@@ -135,9 +135,9 @@ def build_layer(namespace, layout, name, out, mesh_size):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--gds", type=Path, default=ROOT / "kelvin/data/sram22_64x22m4w22.gds")
+    parser.add_argument("--gds", type=Path, default=ROOT / "data/sram22_64x22m4w22.gds")
     parser.add_argument("--cell", default="sram_sp_cell")
-    parser.add_argument("--out", type=Path, default=ROOT / "kelvin/out/sram_mesh_comparison")
+    parser.add_argument("--out", type=Path, default=ROOT / "out/sram_mesh_comparison")
     parser.add_argument("--mesh-size-um", type=float, default=0.06)
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)

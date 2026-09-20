@@ -7,8 +7,10 @@ isolation and other legacy entry points have not been migrated.
 
 ## From the notebook
 
-1. Open `../read_gds.ipynb`, restart its kernel, and run the staged meshing cells.
-   The default is `kelvin/data/sram22_64x22m4w22.gds`, cell `sram_sp_cell`.
+1. Open the repository-local [`read_gds.ipynb`](read_gds.ipynb), restart its
+   kernel, and run the staged meshing cells. Start Jupyter from the Kelvin
+   repository root; no parent-project notebook or `data/` directory is needed.
+   The default is `data/sram22_64x22m4w22.gds`, cell `sram_sp_cell`.
    The historical comparison section is optional.
 2. The notebook writes `out/sram_notebook_mesh/` **inside Kelvin**, including
    `sram_sp_cell_material_regions.msh` and its `.json` material/source manifest.
@@ -21,9 +23,27 @@ isolation and other legacy entry points have not been migrated.
    it does **not** regenerate the mesh. Electrical powers can change between runs.
 
 The final notebook cell can launch a steady run when `RUN_KELVIN_SRAM=True`.
-`KELVIN_PYTHON` selects its external DOLFINx interpreter, so a geometry-only
-notebook kernel remains usable. Mesh generation itself does not require SPICE.
-`GDS_CASE=generic` restores the earlier inverter/custom-layout configuration;
+`KELVIN_PYTHON` selects its external DOLFINx interpreter (default: the notebook
+kernel's `sys.executable`), so a geometry-only notebook kernel remains usable.
+Mesh generation itself does not require SPICE. `KELVIN_COMPARE_PYTHON` similarly
+selects the interpreter for the optional historical comparison; those previews
+also require an existing legacy bitcell mesh via `KELVIN_OLD_MSH`.
+Regenerating that optional comparison still uses historical layer-audit helpers
+that expect the original external `../data/sky130/pdk/` reference files; those
+files are not bundled. Leave `REBUILD_SRAM_COMPARISON=False` in a fresh clone.
+This does not affect the main staged SRAM mesh/solver workflow.
+`GDS_CASE=generic` selects the optional custom-layout configuration and requires
+an explicit `GDS_INPUT`; relative paths resolve below this repository's `data/`,
+or use an absolute path for an external layout. For example, from the repo root:
+
+```bash
+GDS_CASE=generic GDS_INPUT=/absolute/path/to/custom_cell.gds jupyter lab read_gds.ipynb
+```
+
+External PDK example bundles are not included or required for the SRAM run.
+If you supply a bundle at `data/sky130/` with `sources.json`, the notebook
+checks the listed artifact hashes. All notebook-generated outputs go below
+this repository's `out/` directory.
 `GDS_REFINE=0.5` requests half the default target mesh lengths.
 
 ## Command-line use
@@ -60,10 +80,13 @@ extracted sheet/contact resistances generate SPICE Joule heat, conservatively
 mapped into the same saved thermal mesh. Use `--interconnect none` for the
 previous ideal-wire model. See [INTERCONNECT_HEATING.md](INTERCONNECT_HEATING.md).
 
-On this host the tested interpreter is
-`/global/home/krishnabhattaram/Neural-Network-Materials/Electrostats/env/bin/python`.
-Add `$PWD/.deps/dolfinx-mpc-0.10/python` to `PYTHONPATH` when running there;
-the locally installed ngspice is discovered automatically. The complete
+Use your own environment with Gmsh/gdstk for meshing and DOLFINx, PETSc,
+dolfinx-mpc, and ngspice for the coupled simulation. The notebook does not
+select a machine-specific shared interpreter. If dolfinx-mpc is installed
+locally under `.deps/dolfinx-mpc-0.10/python`, add that directory and the repo
+root to `PYTHONPATH`; otherwise install it in the selected environment.
+Kelvin also discovers a locally installed `.deps/ngspice/bin/ngspice`.
+The complete
 environment setup is in [SRAM_SIMULATION_OVERVIEW.md](SRAM_SIMULATION_OVERVIEW.md#7-running-the-integrated-bitcell-model).
 
 ## What changed
