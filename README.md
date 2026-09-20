@@ -67,6 +67,11 @@ dependencies, and saved-full-mesh tests may skip when local artifacts are absent
 inspect the skip summary (`-ra`). Source/energy conservation, geometry checks,
 and passing tests verify implementation contracts, not fabricated-chip accuracy.
 
+The 2026-09-20 clean-clone review run passed **534 tests**, with **4 skipped**
+for missing generated full-SRAM mesh fixtures; the four slow legacy 2D tests
+were excluded. See [the verification record](SRAM_REVIEW_PR.md#verification)
+for the exact scope and environment qualifications.
+
 Historical result links under `out/` in the review documents are local evidence,
 not files delivered by this repository. In particular, steady/full-substrate
 renderer prototypes in that directory have not yet been promoted to supported

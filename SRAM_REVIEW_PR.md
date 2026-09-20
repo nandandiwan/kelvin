@@ -41,9 +41,33 @@ for reviewer sign-off, not a claim that every proposed acceptance item is done.
 
 ## Verification
 
-Publication verification is recorded below after testing the merged review
-branch. Earlier numerical evidence in the detailed guide is historical, not a
-claim that every full thermal simulation was rerun for publication.
+Verified on 2026-09-20 using a clean local clone of code commit `ec96abf`:
+
+```bash
+python -m pytest -q -ra -p no:cacheprovider tests --ignore=tests/test_gds_pipeline.py
+```
+
+- **534 passed, 4 skipped in 159.02 seconds.** The four skips require a generated
+  sealed full-SRAM mesh (device-source, wire-source, and two FEM integration tests).
+- The four slow legacy full-macro 2D tests in `test_gds_pipeline.py` were excluded,
+  not reported as passing. No full SRAM mesh rebuild or thermal production run
+  was performed for publication.
+- Real ngspice access/integration tests ran using an explicitly configured
+  ngspice 41 executable. The clone contained no `.deps/`, saved `out/`, parent
+  notebook, or parent PDK fixture. External installed Python/MPC dependencies
+  were supplied separately; this is a source-portability check, not a clean
+  dependency-installation/container test.
+- Includes 18 notebook-bundle tests and 13 upstream-compatibility regression tests.
+- Notebook configuration/extraction/region-preview checks retained all 19 cell
+  IDs, constructed 30 regions with all eight mapped sources, and left the original
+  parent-workspace notebook unchanged.
+- `git diff --check origin/main...HEAD` passes; generated results and installed
+  binaries remain excluded. A targeted common-token/private-key signature scan
+  found no matches in the new source/docs/notebook; this is not a full security audit.
+
+Earlier numerical evidence in the detailed guide is historical, not a claim
+that every full thermal simulation was rerun for publication. Commits after
+`ec96abf` that record these results change documentation only.
 
 ## Unresolved accuracy work
 
