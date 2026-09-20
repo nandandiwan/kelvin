@@ -25,7 +25,55 @@ from mesh.build import (
 )
 
 
-def power_balance(mesh_data, registry, chip, T, k, q, source_depth_m=None):
+def verify_device_source_powers(mesh_data, registry, q, device_power_w,
+                               relative_tolerance=1e-6):
+    """Check each 3D channel against the ORIGINAL electrical power dictionary.
+
+    Unlike power_balance's source-box self-consistency check, the expected
+    values must come directly from the electrical workload, before mapping.
+    This detects lost, duplicated, swapped and incorrectly normalized powers.
+    Also supports array-qualified instance names (e.g. r0c0_X7).
+    """
+    import math
+    from mpi4py import MPI
+    from gds.bitcell_mapping import validate_device_powers
+
+    mesh = mesh_data.mesh
+    if mesh.topology.dim != 3:
+        raise ValueError("Per-device source audit requires a 3D thermal mesh")
+    sources = [r for r in registry.all()
+               if r.source is not None and r.source.kind == "channel"]
+    names = [r.source.device for r in sources]
+    if len(names) != len(set(names)):
+        raise ValueError("Duplicate channel instance names in the source registry")
+    expected = validate_device_powers(device_power_w, names)
+    dx = ufl.Measure("dx", domain=mesh, subdomain_data=mesh_data.cell_tags)
+
+    def integral(expression):
+        return float(mesh.comm.allreduce(assemble_scalar(form(expression)), op=MPI.SUM))
+
+    report = {}
+    for region in sources:
+        name = region.source.device
+        wanted = expected[name]
+        assigned = region.source.power_uw * 1e-6
+        delivered = integral(q * dx(region.tag_id))
+        for label, value in (("assigned", assigned), ("meshed", delivered)):
+            if not math.isclose(value, wanted, rel_tol=relative_tolerance, abs_tol=1e-24):
+                raise ValueError(f"{name}: {label} power {value:.12g} W "
+                                 f"does not match electrical power {wanted:.12g} W")
+        report[name] = {"electrical_w": wanted, "assigned_w": assigned,
+                        "meshed_w": delivered, "physical_tag": region.tag_id}
+    total_electrical = math.fsum(expected.values())
+    total_meshed = integral(q * ufl.Measure("dx", domain=mesh))
+    if not math.isclose(total_meshed, total_electrical,
+                        rel_tol=relative_tolerance, abs_tol=1e-24):
+        raise ValueError("Total mesh heat does not match the electrical channel-power budget")
+    return {"per_device": report, "electrical_total_w": total_electrical,
+            "meshed_total_w": total_meshed}
+
+
+def power_balance(mesh_data, registry, chip, T, k, q, source_depth_m=None, *, intended_total_w=None):
     """Returns a dict of the full power-balance picture for one solved case:
 
         p_gen_w          -- what the solve actually saw, in REAL WATTS
@@ -51,8 +99,17 @@ def power_balance(mesh_data, registry, chip, T, k, q, source_depth_m=None):
     `source_depth_m` converts back to real watts for the external
     comparison; the per-tag nominal/meshed comparison needs the same factor
     for the same reason.
+
+    Imported polygon-prism sources expose ``volume_m3`` and ``power_uw``
+    instead of box dimensions. Their nominal volume comes from independently
+    declared polygon areas and thickness, not from a bounding-box estimate.
+    They are 3D sources and must not use a 2D depth override.
     """
     mesh = mesh_data.mesh
+    if source_depth_m is not None and any(
+            getattr(region.source, "volume_m3", None) is not None
+            for region in registry.all() if region.source is not None):
+        raise ValueError("Imported 3D source volumes cannot use a 2D source_depth_m")
     dx = ufl.Measure("dx", domain=mesh, subdomain_data=mesh_data.cell_tags)
     ds = ufl.Measure("ds", domain=mesh, subdomain_data=mesh_data.facet_tags)
     depth_scale = 1.0 if source_depth_m is None else source_depth_m
@@ -62,6 +119,13 @@ def power_balance(mesh_data, registry, chip, T, k, q, source_depth_m=None):
     p_intended_w = sum(
         r.source.power_uw for r in registry.all() if r.source is not None
     ) * 1e-6
+    if intended_total_w is not None:
+        # Spatially projected sources need not have one registry tag per
+        # resistor. The caller supplies their independently audited budget.
+        import math
+        if not math.isfinite(intended_total_w) or intended_total_w < 0:
+            raise ValueError("intended_total_w must be finite and nonnegative")
+        p_intended_w = float(intended_total_w)
 
     h_bottom = chip.bcs.backside_h_eff
     t_amb = chip.bcs.ambient_t_k
@@ -86,7 +150,9 @@ def power_balance(mesh_data, registry, chip, T, k, q, source_depth_m=None):
         if r.source is None:
             continue
         meshed_m3 = assemble_scalar(form(1.0 * dx(r.tag_id))) * depth_scale
-        if source_depth_m is None:
+        if getattr(r.source, "volume_m3", None) is not None:
+            nominal_m3 = r.source.volume_m3
+        elif source_depth_m is None:
             nominal_m3 = (r.source.w_um * r.source.l_um * r.source.t_um) * 1e-18
         else:
             nominal_m3 = (r.source.w_um * 1e-6) * (r.source.t_um * 1e-6) * source_depth_m

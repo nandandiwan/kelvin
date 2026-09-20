@@ -19,14 +19,23 @@ class BoundaryConditions:
     # model. A real value adds a second Robin sink on the top facet — dual-
     # sided cooling for the BSPDN study (SRAM_THERMAL_REPORT.md's config C).
     top_h_eff: Optional[float] = None
-    # None (default) = lateral cut faces stay natural/adiabatic, correct for a
-    # periodic tile array. A radius in METRES instead opens them as an
+    # None (default) = lateral cut faces stay natural/adiabatic unless
+    # explicitly made periodic below. Insulation is NOT periodicity.
+    # A radius in METRES instead opens them as an
     # asymptotic radiation boundary (h = k/r), representing "the medium
     # continues outward to infinity" without meshing out to it — the
     # conduction analogue of an absorbing boundary. See
     # physics/bcs.py::lateral_radiation_terms. Set it to the distance from the
     # heat source to the cut face.
     lateral_radiation_r_m: Optional[float] = None
+    # Translational temperature/flux continuity on opposite lateral faces.
+    # These describe repetition of the entire modeled geometry AND workload.
+    periodic_x: bool = False
+    periodic_y: bool = False
+
+    def __post_init__(self):
+        if (self.periodic_x or self.periodic_y) and self.lateral_radiation_r_m is not None:
+            raise ValueError("Periodic lateral faces cannot also use lateral Robin radiation")
 
 
 # Fraction of a device's dissipated power attributed to the channel (hot-carrier

@@ -1,0 +1,227 @@
+{
+  "schema_version": 1,
+  "cell_name": "sram_sp_cell",
+  "method": "netlist-assisted original-mask connectivity; not full LVS",
+  "source_gds": "data/sram22_64x22m4w22.gds",
+  "source_gds_sha256": "dcece70a9c2eefd30dab7fba12849048ebbf27e0a17d66488385c23e708d3bb9",
+  "geometry_sha256": "f1f3e576068b1f5b395929348e1704a40656114c17cd5947bfb3de2ed8674baa",
+  "netlist_sha256": {
+    "data/sram_sp_cell.spice": "ab915e162b42f2a4297d0db0af21d3ab3488ebdeb9879fcd97e58ab5125eaf05",
+    "data/sram_sp_cell_exposed.spice": "671087f38dcaa9e0aacafa9855972dc43d485165acaaeb265caff0461db5524d"
+  },
+  "verification_command": "python cases/verify_bitcell_mapping.py",
+  "contracts": [
+    "Two locally disconnected access/poly stripes are the same logical WL in the bundled netlist; only the bottom stripe has a local WL label.",
+    "Each 25 nm PMOS edge overlap touches one storage diffusion; the bundled extracted netlist assigns that same net to both D and S.",
+    "Drain/source ordering is taken from the netlist; geometric terminal matching uses the unordered pair.",
+    "PMOS channels lie wholly in nwell; NMOS channels lie outside nwell in the implicit p-body. The (64,44) VNB port marker is not a full pwell mask."
+  ],
+  "channels": [
+    {
+      "instance": "X0",
+      "device_class": "access",
+      "bbox_um": [
+        -0.33,
+        -0.27,
+        -0.19,
+        -0.12
+      ],
+      "centroid_um": [
+        -0.26,
+        -0.195
+      ],
+      "gate": "WL",
+      "drain": "QB",
+      "source": "BR",
+      "body": "VNB",
+      "model": "sky130_fd_pr__special_nfet_pass",
+      "w_um": 0.14,
+      "l_um": 0.15,
+      "adjacent_sd_nets": [
+        "BR",
+        "QB"
+      ],
+      "short_ds_from_netlist_contract": false
+    },
+    {
+      "instance": "X1",
+      "device_class": "latch",
+      "bbox_um": [
+        -0.4,
+        -1.06,
+        -0.19,
+        -0.91
+      ],
+      "centroid_um": [
+        -0.295,
+        -0.985
+      ],
+      "gate": "QB",
+      "drain": "Q",
+      "source": "VSS",
+      "body": "VNB",
+      "model": "sky130_fd_pr__special_nfet_latch",
+      "w_um": 0.21,
+      "l_um": 0.15,
+      "adjacent_sd_nets": [
+        "VSS",
+        "Q"
+      ],
+      "short_ds_from_netlist_contract": false
+    },
+    {
+      "instance": "X2",
+      "device_class": "access",
+      "bbox_um": [
+        -0.33,
+        -1.46,
+        -0.19,
+        -1.31
+      ],
+      "centroid_um": [
+        -0.26,
+        -1.385
+      ],
+      "gate": "WL",
+      "drain": "BL",
+      "source": "Q",
+      "body": "VNB",
+      "model": "sky130_fd_pr__special_nfet_pass",
+      "w_um": 0.14,
+      "l_um": 0.15,
+      "adjacent_sd_nets": [
+        "Q",
+        "BL"
+      ],
+      "short_ds_from_netlist_contract": false
+    },
+    {
+      "instance": "X3",
+      "device_class": "parasitic",
+      "bbox_um": [
+        -1.01,
+        -1.335,
+        -0.87,
+        -1.31
+      ],
+      "centroid_um": [
+        -0.94,
+        -1.3225
+      ],
+      "gate": "WL",
+      "drain": "Q",
+      "source": "Q",
+      "body": "VPB",
+      "model": "sky130_fd_pr__special_pfet_pass_shortl",
+      "w_um": 0.14,
+      "l_um": 0.025,
+      "adjacent_sd_nets": [
+        "Q"
+      ],
+      "short_ds_from_netlist_contract": true
+    },
+    {
+      "instance": "X4",
+      "device_class": "parasitic",
+      "bbox_um": [
+        -1.01,
+        -0.27,
+        -0.87,
+        -0.245
+      ],
+      "centroid_um": [
+        -0.94,
+        -0.2575
+      ],
+      "gate": "WL",
+      "drain": "QB",
+      "source": "QB",
+      "body": "VPB",
+      "model": "sky130_fd_pr__special_pfet_pass_shortl",
+      "w_um": 0.14,
+      "l_um": 0.025,
+      "adjacent_sd_nets": [
+        "QB"
+      ],
+      "short_ds_from_netlist_contract": true
+    },
+    {
+      "instance": "X5",
+      "device_class": "pullup",
+      "bbox_um": [
+        -1.01,
+        -0.67,
+        -0.87,
+        -0.52
+      ],
+      "centroid_um": [
+        -0.94,
+        -0.595
+      ],
+      "gate": "Q",
+      "drain": "VDD",
+      "source": "QB",
+      "body": "VPB",
+      "model": "sky130_fd_pr__special_pfet_pass",
+      "w_um": 0.14,
+      "l_um": 0.15,
+      "adjacent_sd_nets": [
+        "QB",
+        "VDD"
+      ],
+      "short_ds_from_netlist_contract": false
+    },
+    {
+      "instance": "X6",
+      "device_class": "pullup",
+      "bbox_um": [
+        -1.01,
+        -1.06,
+        -0.87,
+        -0.91
+      ],
+      "centroid_um": [
+        -0.94,
+        -0.985
+      ],
+      "gate": "QB",
+      "drain": "Q",
+      "source": "VDD",
+      "body": "VPB",
+      "model": "sky130_fd_pr__special_pfet_pass",
+      "w_um": 0.14,
+      "l_um": 0.15,
+      "adjacent_sd_nets": [
+        "VDD",
+        "Q"
+      ],
+      "short_ds_from_netlist_contract": false
+    },
+    {
+      "instance": "X7",
+      "device_class": "latch",
+      "bbox_um": [
+        -0.4,
+        -0.67,
+        -0.19,
+        -0.52
+      ],
+      "centroid_um": [
+        -0.295,
+        -0.595
+      ],
+      "gate": "Q",
+      "drain": "VSS",
+      "source": "QB",
+      "body": "VNB",
+      "model": "sky130_fd_pr__special_nfet_latch",
+      "w_um": 0.21,
+      "l_um": 0.15,
+      "adjacent_sd_nets": [
+        "QB",
+        "VSS"
+      ],
+      "short_ds_from_netlist_contract": false
+    }
+  ]
+}

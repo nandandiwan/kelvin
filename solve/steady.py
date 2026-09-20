@@ -6,13 +6,34 @@ from dolfinx.fem.petsc import LinearProblem
 
 from physics.coeffs import build_coeffs
 from physics.forms import steady_form
+from physics.periodic import build_periodic_constraint
 
 PETSC_OPTIONS = {
     "ksp_type": "cg",
     "pc_type": "hypre",
     "pc_hypre_type": "boomeramg",
     "ksp_rtol": 1e-10,
+    "ksp_error_if_not_converged": True,
 }
+
+
+def _solve(V, a, L, chip, bcs=()):
+    mpc = build_periodic_constraint(V, chip, bcs)
+    if mpc is None:
+        problem = LinearProblem(
+            a, L, bcs=list(bcs), petsc_options_prefix="thermals_steady_", petsc_options=PETSC_OPTIONS
+        )
+    else:
+        from dolfinx_mpc import LinearProblem as PeriodicLinearProblem
+
+        problem = PeriodicLinearProblem(
+            a, L, mpc, bcs=list(bcs), petsc_options_prefix="thermals_steady_", petsc_options=PETSC_OPTIONS
+        )
+    T = problem.solve()
+    if problem.solver.getConvergedReason() <= 0:
+        raise RuntimeError(f"Steady heat solve failed: KSP reason {problem.solver.getConvergedReason()}")
+    T.name = "T"
+    return T
 
 
 def solve_steady(mesh_data, registry, chip, source_depth_m=None, bc_builder=None):
@@ -39,11 +60,7 @@ def solve_steady(mesh_data, registry, chip, source_depth_m=None, bc_builder=None
     V, a, L = steady_form(mesh, mesh_data.facet_tags, k, q, chip)
 
     bcs = bc_builder(V) if bc_builder is not None else []
-    problem = LinearProblem(
-        a, L, bcs=bcs, petsc_options_prefix="thermals_steady_", petsc_options=PETSC_OPTIONS
-    )
-    T = problem.solve()
-    T.name = "T"
+    T = _solve(V, a, L, chip, bcs)
     return T, k, q
 
 
@@ -55,9 +72,4 @@ def solve_steady_from_fields(mesh_data, k, q, chip):
     gds.upscale, not a handful of discrete tagged regions)."""
     mesh = mesh_data.mesh
     V, a, L = steady_form(mesh, mesh_data.facet_tags, k, q, chip)
-    problem = LinearProblem(
-        a, L, petsc_options_prefix="thermals_steady_", petsc_options=PETSC_OPTIONS
-    )
-    T = problem.solve()
-    T.name = "T"
-    return T
+    return _solve(V, a, L, chip)

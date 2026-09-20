@@ -35,6 +35,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from gds import techmap
+from gds.bitcell_mapping import validate_device_powers
 from gds.power import mine_access_timing
 from gds.spice_power import NAMED_BIAS_POINTS, bias_device_power_w
 from gds.tile_array import CELL_H_UM, CELL_W_UM, tile_array
@@ -42,6 +43,7 @@ from mesh.gds_build import build_gds_3d_mesh
 from mesh.gds_svg_viz import build_layer_regions, dof_indices_per_volume
 from mesh.viz import MATERIAL_COLORS
 from physics.coeffs import build_coeffs
+from post.budget import verify_device_source_powers
 from solve.transient import TransientHeatSolver
 from spec.chip import BoundaryConditions
 
@@ -131,17 +133,22 @@ def main():
           f"active row = {active_row}")
 
     wl, bl, br, q, qb, _ = NAMED_BIAS_POINTS["crowbar"]
-    raw = bias_device_power_w(wl, bl, br, q, qb)
-    class_w = {"access": raw["X0"], "latch": raw["X1"], "pullup": raw["X5"],
-               "parasitic": raw["X3"]}
+    raw = validate_device_powers(bias_device_power_w(wl, bl, br, q, qb))
+    # Independent electrical inventory: do not reconstruct expected powers
+    # from the generated SourceBoxes being audited.
+    electrical_power_w = {
+        f"r{row}c{col}_{instance}": power if row == active_row else 0.0
+        for row in range(args.rows) for col in range(args.cols)
+        for instance, power in raw.items()
+    }
 
     import dataclasses
     new_ch_src = []
     n_active = 0
     for box, poly in ch_src:
-        row = int(box.device.split("c")[0][1:])
-        cls = "".join(ch for ch in box.device.split("_")[1] if not ch.isdigit())
-        p_uw = (class_w[cls] * 1e6) if row == active_row else 0.0
+        cell_id, _ = box.device.rsplit("_", 1)
+        row = int(cell_id.split("c", 1)[0][1:])
+        p_uw = electrical_power_w[box.device] * 1e6
         new_ch_src.append((dataclasses.replace(box, power_uw=p_uw), poly))
         n_active += row == active_row
     ch_src = new_ch_src
@@ -161,6 +168,9 @@ def main():
 
     k, rho_cp, q_f = build_coeffs(mesh_data.mesh, mesh_data.cell_tags, registry,
                                   source_depth_m=None)
+    source_audit = verify_device_source_powers(mesh_data, registry, q_f, electrical_power_w)
+    if mesh_data.mesh.comm.rank == 0:
+        (OUT / "source_power_audit.json").write_text(json.dumps(source_audit, indent=2))
     r_m = (min(x1 - x0, y1 - y0) / 2) * 1e-6
     chip = types.SimpleNamespace(
         bcs=BoundaryConditions(ambient_t_k=300.0, backside_h_eff=20000.0, top_h_eff=None,

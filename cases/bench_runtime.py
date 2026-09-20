@@ -30,11 +30,13 @@ import gdstk
 import numpy as np
 
 from gds import techmap
+from gds.bitcell_mapping import channel_sources_for, map_bitcell_channels
 from gds.read import flatten_by_layer
-from gds.sources import _dims_um, extract_channels, extract_contacts
+from gds.sources import _dims_um, extract_contacts
 from gds.spice_power import named_bias_point_power_w
 from mesh.gds_build import build_gds_3d_mesh
 from physics.coeffs import build_coeffs
+from post.budget import verify_device_source_powers
 from post.metrics import tmax
 from solve.steady import solve_steady_from_fields
 from solve.transient import TransientHeatSolver
@@ -43,15 +45,6 @@ from spec.chip import BoundaryConditions, SourceBox
 OUT = Path("out/bench")
 GDS_PATH = "data/sram22_64x22m4w22.gds"
 CELL_NAME = "sram_sp_cell"
-_NWELL_SPLIT_X_UM = -0.72
-
-
-def _classify(x_ext, y_ext, is_left):
-    if abs(y_ext - 0.025) < 0.01:
-        return "parasitic"
-    if abs(x_ext - 0.21) < 0.01:
-        return "latch"
-    return "pullup" if is_left else "access"
 
 
 def bench_one(pad_um, refine, n_steps):
@@ -62,16 +55,7 @@ def bench_one(pad_um, refine, n_steps):
     window = (x0 - pad_um, x1 + pad_um, y0 - pad_um, y1 + pad_um)
 
     dp = named_bias_point_power_w("crowbar", row_hit_rate=1.0)
-    cls_w = {"access": dp["X0"], "latch": dp["X1"], "pullup": dp["X5"],
-             "parasitic": dp["X3"]}
-    ch_src = []
-    for i, poly in enumerate(extract_channels(by_layer)):
-        cx, cy, xe, ye = _dims_um(poly)
-        cls = _classify(xe, ye, is_left=cx < _NWELL_SPLIT_X_UM)
-        ch_src.append((SourceBox(device=f"{cls}{i}", kind="channel", x_um=cx, y_um=cy,
-                                 z0_um=0.0, w_um=xe, l_um=ye,
-                                 t_um=techmap.CHANNEL_THICKNESS_UM,
-                                 power_uw=cls_w[cls] * 1e6), poly))
+    ch_src = channel_sources_for(map_bitcell_channels(by_layer), dp)
     co_src = [(SourceBox(device=f"co{i}", kind="contact", x_um=_dims_um(p)[0],
                          y_um=_dims_um(p)[1], z0_um=0.0, w_um=_dims_um(p)[2],
                          l_um=_dims_um(p)[3], t_um=techmap.LICON1_THICKNESS_UM,
@@ -89,6 +73,10 @@ def bench_one(pad_um, refine, n_steps):
     n_cells = mesh_data.mesh.topology.index_map(mesh_data.mesh.topology.dim).size_local
     k, rho_cp, q = build_coeffs(mesh_data.mesh, mesh_data.cell_tags, registry,
                                 source_depth_m=None)
+    source_audit = verify_device_source_powers(mesh_data, registry, q, dp)
+    if mesh_data.mesh.comm.rank == 0:
+        (OUT / f"pad_{pad_um:g}" / "source_power_audit.json").write_text(
+            json.dumps(source_audit, indent=2))
     chip = types.SimpleNamespace(
         bcs=BoundaryConditions(ambient_t_k=300.0, backside_h_eff=20000.0, top_h_eff=None))
 

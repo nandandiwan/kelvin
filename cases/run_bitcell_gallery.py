@@ -2,8 +2,9 @@
 power at several named bias points (idle/HOLD, WRITE settled, READ, the
 worst-case mid-switching CROWBAR instant — see gds.spice_power's
 NAMED_BIAS_POINTS), each mapped onto the real 3D bitcell geometry and solved
-to steady state. Same channel/contact geometry and device-to-channel
-classification as cases/run_bitcell_compact.py; one mesh build per operating
+to steady state. Same channel/contact geometry and instance-to-channel
+mapping as cases/run_bitcell_compact.py, with each of X0..X7 receiving its own
+power even in asymmetric operating points; one mesh build per operating
 point (k/q must stay registry-consistent with the mesh that produced them),
 which is cheap at this scale (~15s each, already established).
 
@@ -18,6 +19,7 @@ power already accounts for that (gds.spice_power.named_bias_point_power_w's
     python cases/run_bitcell_gallery.py
 """
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -30,13 +32,14 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gds import techmap
+from gds.bitcell_mapping import channel_sources_for, map_bitcell_channels
 from gds.read import flatten_by_layer
-from gds.sources import _dims_um, extract_channels, extract_contacts
+from gds.sources import _dims_um, extract_contacts
 from gds.spice_netlist import N_ROWS
 from gds.spice_power import NAMED_BIAS_POINTS, named_bias_point_power_w
 from mesh.gds_build import build_gds_3d_mesh
 from physics.coeffs import build_coeffs
-from post.budget import power_balance, print_power_balance
+from post.budget import power_balance, print_power_balance, verify_device_source_powers
 from post.metrics import tmax
 from solve.steady import solve_steady_from_fields
 from spec.chip import BoundaryConditions, SourceBox
@@ -44,17 +47,8 @@ from spec.chip import BoundaryConditions, SourceBox
 GDS_PATH = "data/sram22_64x22m4w22.gds"
 CELL_NAME = "sram_sp_cell"
 OUT_DIR = Path("out/bitcell_gallery")
-_NWELL_SPLIT_X_UM = -0.72
 
 SCENARIOS = [("worst_case", 1.0), ("average_case", 1.0 / N_ROWS)]
-
-
-def _classify(x_ext, y_ext, is_left):
-    if abs(y_ext - 0.025) < 0.01:
-        return "parasitic"
-    if abs(x_ext - 0.21) < 0.01:
-        return "latch"
-    return "pullup" if is_left else "access"
 
 
 def build_bitcell_geometry():
@@ -62,38 +56,25 @@ def build_bitcell_geometry():
     cell = next(c for c in lib.cells if c.name == CELL_NAME)
     by_layer = flatten_by_layer(cell)
     (x0, y0), (x1, y1) = cell.bounding_box()
-    channels = extract_channels(by_layer)
-    channel_info = [(_dims_um(p), p) for p in channels]
+    channel_info = map_bitcell_channels(by_layer)
     contacts = extract_contacts(by_layer)
     return by_layer, (x0, x1, y0, y1), channel_info, contacts
 
 
-def channel_sources_for(channel_info, class_power_w):
-    sources = []
-    for i, ((cx, cy, x_ext, y_ext), poly) in enumerate(channel_info):
-        cls = _classify(x_ext, y_ext, is_left=cx < _NWELL_SPLIT_X_UM)
-        box = SourceBox(device=f"{cls}{i}", kind="channel", x_um=cx, y_um=cy, z0_um=0.0,
-                         w_um=x_ext, l_um=y_ext, t_um=techmap.CHANNEL_THICKNESS_UM,
-                         power_uw=class_power_w[cls] * 1e6)
-        sources.append((box, poly))
-    return sources
-
-
 def solve_operating_point(by_layer, window, channel_info, contact_sources, chip, name, row_hit_rate, out_tag):
     device_power_w = named_bias_point_power_w(name, row_hit_rate=row_hit_rate)
-    class_power_w = {
-        "access": device_power_w["X0"], "latch": device_power_w["X1"],
-        "pullup": device_power_w["X5"], "parasitic": device_power_w["X3"],
-    }
-    print(f"{out_tag}: per-class power (W) = {({k: f'{v:.3e}' for k, v in class_power_w.items()})}")
+    print(f"{out_tag}: per-instance power (W) = {({k: f'{v:.3e}' for k, v in device_power_w.items()})}")
 
-    my_channel_sources = channel_sources_for(channel_info, class_power_w)
+    my_channel_sources = channel_sources_for(channel_info, device_power_w)
     total_power_w = max(sum(b.power_uw for b, _ in my_channel_sources) * 1e-6, 1e-18)
     mesh_data, registry = build_gds_3d_mesh(
         by_layer, window, total_power_w, out_dir=f"{OUT_DIR}/{out_tag}", refine=1.0, renders=False,
         stack=techmap.FRONTSIDE_STACK, channel_sources=my_channel_sources, contact_sources=contact_sources,
     )
     k_f, rho_cp_f, q_f = build_coeffs(mesh_data.mesh, mesh_data.cell_tags, registry, source_depth_m=None)
+    source_audit = verify_device_source_powers(mesh_data, registry, q_f, device_power_w)
+    if mesh_data.mesh.comm.rank == 0:
+        (OUT_DIR / out_tag / "source_power_audit.json").write_text(json.dumps(source_audit, indent=2))
     T = solve_steady_from_fields(mesh_data, k_f, q_f, chip)
     tk, coords = tmax(T)
     print(f"  Tmax = {tk:.6f} K (dT = {tk-300.0:.6e} K)")

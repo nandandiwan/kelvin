@@ -8,6 +8,7 @@ honest thing to show alongside a single number.
 
     python cases/run_bitcell_heff_sensitivity.py
 """
+import json
 import sys
 import types
 from pathlib import Path
@@ -19,13 +20,15 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from cases.run_bitcell_compact import CELL_NAME, GDS_PATH, _classify, _NWELL_SPLIT_X_UM
+from cases.run_bitcell_compact import CELL_NAME, GDS_PATH
 from gds import techmap
+from gds.bitcell_mapping import channel_sources_for, map_bitcell_channels
 from gds.read import flatten_by_layer
-from gds.sources import _dims_um, extract_channels, extract_contacts
+from gds.sources import _dims_um, extract_contacts
 from gds.spice_power import named_bias_point_power_w
 from mesh.gds_build import build_gds_3d_mesh
 from physics.coeffs import build_coeffs
+from post.budget import verify_device_source_powers
 from post.metrics import tmax
 from solve.steady import solve_steady_from_fields
 from spec.chip import BoundaryConditions, SourceBox
@@ -41,19 +44,8 @@ def main():
     (x0, y0), (x1, y1) = cell.bounding_box()
     window = (x0, x1, y0, y1)
 
-    class_power_w_named = named_bias_point_power_w("crowbar", row_hit_rate=1.0)
-    class_power_w = {"access": class_power_w_named["X0"], "latch": class_power_w_named["X1"],
-                      "pullup": class_power_w_named["X5"], "parasitic": class_power_w_named["X3"]}
-
-    channels = extract_channels(by_layer)
-    channel_sources = []
-    for i, poly in enumerate(channels):
-        cx, cy, x_ext, y_ext = _dims_um(poly)
-        cls = _classify(x_ext, y_ext, is_left=cx < _NWELL_SPLIT_X_UM)
-        box = SourceBox(device=f"{cls}{i}", kind="channel", x_um=cx, y_um=cy, z0_um=0.0,
-                         w_um=x_ext, l_um=y_ext, t_um=techmap.CHANNEL_THICKNESS_UM,
-                         power_uw=class_power_w[cls] * 1e6)
-        channel_sources.append((box, poly))
+    device_power_w = named_bias_point_power_w("crowbar", row_hit_rate=1.0)
+    channel_sources = channel_sources_for(map_bitcell_channels(by_layer), device_power_w)
 
     contacts = extract_contacts(by_layer)
     contact_sources = [
@@ -69,6 +61,9 @@ def main():
         stack=techmap.FRONTSIDE_STACK, channel_sources=channel_sources, contact_sources=contact_sources,
     )
     k, rho_cp, q = build_coeffs(mesh_data.mesh, mesh_data.cell_tags, registry, source_depth_m=None)
+    source_audit = verify_device_source_powers(mesh_data, registry, q, device_power_w)
+    if mesh_data.mesh.comm.rank == 0:
+        (Path(OUT_DIR) / "source_power_audit.json").write_text(json.dumps(source_audit, indent=2))
 
     dT_by_h = {}
     for h_eff in H_EFF_SWEEP:

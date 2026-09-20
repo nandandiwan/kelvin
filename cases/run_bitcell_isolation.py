@@ -1,13 +1,13 @@
 """How much a bitcell heats depends on how much heat sink it is allowed to
 use -- i.e. on whether its neighbours are hot too.
 
-The as-built single-cell model has ADIABATIC side walls sitting exactly on the
-cell boundary. That is not "one hot cell": a mirror-symmetric wall is an
-infinite array of identical cells, so it answers "what if EVERY cell in the
-array were doing this, all at once, forever?". Padding the window with plain
-background silicon relaxes that toward the opposite limit -- one hot cell in
-cold surroundings, free to dump heat sideways into its neighbours' share of
-the sink.
+This historical padding study retains ADIABATIC side walls explicitly,
+even though the compact case now defaults to periodic faces. At zero pad
+all heat must leave through one cell's backside footprint. Padding the
+window with background silicon allows spreading before heat reaches the
+insulating outer wall and increases the available backside sink area.
+Insulation is not generally equivalent to a periodic array; isolation
+requires convergence with increasing padding.
 
 Sweeping the pad traces the crossover between the two regimes, and separates
 the two resistances that set the answer:
@@ -45,7 +45,8 @@ def _worker(pad_um, refine, out_json):
 import sys, json; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
 from cases.run_bitcell_compact import run
 tmax, n = run(pad_um={pad_um!r}, refine={refine!r},
-              out_dir="out/bitcell_isolation/pad_{pad_um:g}", renders=False)
+              out_dir="out/bitcell_isolation/pad_{pad_um:g}", renders=False,
+              lateral_bc="insulating", power_model="dc-surrogate", point="crowbar")
 json.dump({{"pad_um": {pad_um!r}, "tmax_k": tmax, "n_cells": n}}, open({out_json!r}, "w"))
 """
     return subprocess.Popen([sys.executable, "-c", code],
