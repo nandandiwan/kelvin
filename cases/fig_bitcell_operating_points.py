@@ -38,14 +38,15 @@ import matplotlib.tri as mtri
 import numpy as np
 
 from cases.run_bitcell_gallery import (
-    OUT_DIR as GALLERY_DIR, build_bitcell_geometry, channel_sources_for, _classify,
+    OUT_DIR as GALLERY_DIR, build_bitcell_geometry, channel_sources_for,
 )
 from gds import techmap
+from gds.bitcell_mapping import mapping_revision
 from gds.sources import _dims_um, extract_contacts
 from gds.spice_power import NAMED_BIAS_POINTS, named_bias_point_power_w
 from mesh.gds_build import build_gds_3d_mesh
 from physics.coeffs import build_coeffs
-from post.budget import power_balance, print_power_balance
+from post.budget import power_balance, print_power_balance, verify_device_source_powers
 from post.metrics import tmax
 from solve.steady import solve_steady_from_fields
 from spec.chip import BoundaryConditions, SourceBox
@@ -60,7 +61,6 @@ POINT_LABEL = {
     "crowbar": "CROWBAR (worst case)",
 }
 HOT_POINTS = ["read_1", "crowbar"]
-_NWELL_SPLIT_X_UM = -0.72
 
 
 def solve_point(name, refine):
@@ -78,9 +78,7 @@ def solve_point(name, refine):
     ]
 
     device_power_w = named_bias_point_power_w(name, row_hit_rate=1.0)
-    class_power_w = {"access": device_power_w["X0"], "latch": device_power_w["X1"],
-                     "pullup": device_power_w["X5"], "parasitic": device_power_w["X3"]}
-    channel_sources = channel_sources_for(channel_info, class_power_w)
+    channel_sources = channel_sources_for(channel_info, device_power_w)
     total_power_w = max(sum(b.power_uw for b, _ in channel_sources) * 1e-6, 1e-18)
 
     mesh_data, registry = build_gds_3d_mesh(
@@ -89,6 +87,7 @@ def solve_point(name, refine):
         channel_sources=channel_sources, contact_sources=contact_sources)
     k_f, rho_cp_f, q_f = build_coeffs(mesh_data.mesh, mesh_data.cell_tags, registry,
                                       source_depth_m=None)
+    verify_device_source_powers(mesh_data, registry, q_f, device_power_w)
     chip = types.SimpleNamespace(
         bcs=BoundaryConditions(ambient_t_k=300.0, backside_h_eff=20000.0, top_h_eff=None))
     T = solve_steady_from_fields(mesh_data, k_f, q_f, chip)
@@ -100,7 +99,8 @@ def solve_point(name, refine):
     dof = T.function_space.tabulate_dof_coordinates() * 1e6
     return {"dof_um": dof, "dT": T.x.array - 300.0, "tmax_k": tk,
             "hot_um": np.asarray(coords) * 1e6,
-            "total_power_w": total_power_w}
+            "total_power_w": total_power_w,
+            "source_mapping_sha256": mapping_revision()}
 
 
 def _plane(res, z_um):
@@ -183,8 +183,9 @@ def fig_device_detail(results, channel_info):
 
         # Outline each real channel and label it with its own peak, so the
         # per-device numbers are readable even where the colour ramp is subtle.
-        for i, ((cx, cy, x_ext, y_ext), _poly) in enumerate(channel_info):
-            cls = _classify(x_ext, y_ext, is_left=cx < _NWELL_SPLIT_X_UM)
+        for channel in channel_info:
+            cx, cy, x_ext, y_ext = _dims_um(channel.polygon)
+            cls = channel.device_class
             ax.add_patch(plt.Rectangle((cx - x_ext / 2, cy - y_ext / 2), x_ext, y_ext,
                                        fill=False, ec="#39d3ff", lw=1.0, zorder=5))
             inside = ((np.abs(x - cx) <= x_ext / 2) & (np.abs(y - cy) <= y_ext / 2))
@@ -282,9 +283,7 @@ def fig_3d(refine):
         for i, p in enumerate(contacts)
     ]
     dp = named_bias_point_power_w("crowbar", row_hit_rate=1.0)
-    class_power_w = {"access": dp["X0"], "latch": dp["X1"], "pullup": dp["X5"],
-                     "parasitic": dp["X3"]}
-    channel_sources = channel_sources_for(channel_info, class_power_w)
+    channel_sources = channel_sources_for(channel_info, dp)
     total_power_w = sum(b.power_uw for b, _ in channel_sources) * 1e-6
 
     mesh_data, registry = build_gds_3d_mesh(
@@ -293,6 +292,7 @@ def fig_3d(refine):
         channel_sources=channel_sources, contact_sources=contact_sources)
     k_f, _, q_f = build_coeffs(mesh_data.mesh, mesh_data.cell_tags, registry,
                                source_depth_m=None)
+    verify_device_source_powers(mesh_data, registry, q_f, dp)
     chip = types.SimpleNamespace(
         bcs=BoundaryConditions(ambient_t_k=300.0, backside_h_eff=20000.0, top_h_eff=None))
     T = solve_steady_from_fields(mesh_data, k_f, q_f, chip)
@@ -387,6 +387,10 @@ def main():
         npz = CACHE / f"{name}.npz"
         if args.plot_only and npz.exists():
             d = np.load(npz)
+            if ("source_mapping_sha256" not in d.files
+                    or str(d["source_mapping_sha256"]) != mapping_revision()):
+                raise ValueError(f"Stale transistor-power mapping in {npz}; "
+                                 "rerun without --plot-only")
             results[name] = {k: d[k] for k in d.files}
             print(f"{name}: cached, dT max {results[name]['dT'].max():.6e} K")
             continue

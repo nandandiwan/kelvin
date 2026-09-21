@@ -53,11 +53,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 
 from gds import techmap
+from gds.bitcell_mapping import validate_device_powers
 from gds.power import mine_access_timing
 from gds.spice_power import NAMED_BIAS_POINTS, bias_device_power_w
 from gds.tile_array import CELL_H_UM, CELL_W_UM, tile_array
 from mesh.gds_build import build_gds_3d_mesh
 from physics.coeffs import build_coeffs
+from post.budget import verify_device_source_powers
 from solve.transient import TransientHeatSolver
 from spec.chip import BoundaryConditions
 
@@ -85,21 +87,26 @@ def main():
           f"active row = {active_row}")
 
     wl, bl, br, q, qb, _ = NAMED_BIAS_POINTS["crowbar"]
-    raw = bias_device_power_w(wl, bl, br, q, qb)
-    class_w = {"access": raw["X0"], "latch": raw["X1"], "pullup": raw["X5"],
-               "parasitic": raw["X3"]}
-    print("raw per-device power (W):", {k: f"{v:.3e}" for k, v in class_w.items()})
+    raw = validate_device_powers(bias_device_power_w(wl, bl, br, q, qb))
+    print("raw per-device power (W):", {k: f"{v:.3e}" for k, v in raw.items()})
+    # Build the electrical budget independently of the mapped source list, so
+    # the mesh audit catches omitted/duplicated instances as well as bad powers.
+    electrical_power_w = {
+        f"r{row}c{col}_{instance}": power if row == active_row else 0.0
+        for row in range(args.rows) for col in range(args.cols)
+        for instance, power in raw.items()
+    }
 
     # SourceBox is frozen -- rebuild each one with its real power rather than
-    # mutating. Parse "r{row}c{col}_{cls}{i}" back out and zero every device
+    # mutating. Parse "r{row}c{col}_{instance}" back out and zero every device
     # outside the active row: HOLD power (~1e-13 W) is eight orders below
     # crowbar and only adds solver noise for no visible effect.
     n_active = 0
     new_ch_src = []
     for box, poly in ch_src:
-        row = int(box.device.split("c")[0][1:])
-        cls = "".join(ch for ch in box.device.split("_")[1] if not ch.isdigit())
-        p_uw = (class_w[cls] * 1e6) if row == active_row else 0.0
+        cell_id, _ = box.device.rsplit("_", 1)
+        row = int(cell_id.split("c", 1)[0][1:])
+        p_uw = electrical_power_w[box.device] * 1e6
         new_ch_src.append((dataclasses.replace(box, power_uw=p_uw), poly))
         n_active += row == active_row
     ch_src = new_ch_src
@@ -118,6 +125,9 @@ def main():
 
     k, rho_cp, q_f = build_coeffs(mesh_data.mesh, mesh_data.cell_tags, registry,
                                   source_depth_m=None)
+    source_audit = verify_device_source_powers(mesh_data, registry, q_f, electrical_power_w)
+    if mesh_data.mesh.comm.rank == 0:
+        (OUT / "source_power_audit.json").write_text(json.dumps(source_audit, indent=2))
     # Far-field lateral faces: r = half the SHORTER window dimension, the same
     # convention cases/run_bspdn_benchmark_3d.py uses (verified there to
     # reproduce a 100um domain to ~0.2% from a few-um window).

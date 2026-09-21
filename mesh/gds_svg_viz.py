@@ -99,7 +99,9 @@ def make_geometry_svg(by_layer, stack, source_name: str, top_cell_name: str,
 def render_regions_geometry_svg(regions: List[dict], title: str, subtitle: str,
                                  banner: str, plan_label: str = "2D plan",
                                  width: int = 1180, z_exaggeration: float = None,
-                                 notes: List[str] = None) -> str:
+                                 notes: List[str] = None,
+                                 plan_regions: List[dict] = None,
+                                 iso_label: str = "3D isometric — painter-sorted faces") -> str:
     """Draw an already-built `regions` list: 2D plan on the left, painter-sorted
     isometric on the right.
 
@@ -108,11 +110,16 @@ def render_regions_geometry_svg(regions: List[dict], title: str, subtitle: str,
     backside metal tracks are SYNTHETIC grids (gds.techmap.SYNTHETIC), generated
     from a pitch/width rule rather than read from a mask, so they can never go
     through _build_regions.
+
+    Optional plan_regions keeps the original GDS at left while regions at
+    right describe a different, explicitly labeled mesh/geometry realization.
+    It does not change the geometry or connect separate polygons.
     """
     if not regions:
         raise ValueError("no layer geometry to render")
 
-    all_xy = [point for region in regions for volume in region["volumes"] for point in volume["footprint_xy_um"]]
+    plan_regions = regions if plan_regions is None else plan_regions
+    all_xy = [point for region in regions + plan_regions for volume in region["volumes"] for point in volume["footprint_xy_um"]]
     xs, ys = zip(*all_xy)
     xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
     xspan, yspan = max(xmax - xmin, 1e-12), max(ymax - ymin, 1e-12)
@@ -174,12 +181,12 @@ def render_regions_geometry_svg(regions: List[dict], title: str, subtitle: str,
         f'<rect x="35" y="{panel_y}" width="{panel_w}" height="{panel_h}" rx="8" fill="#fafafa" stroke="#cfd8dc"/>',
         f'<rect x="585" y="{panel_y}" width="560" height="{panel_h}" rx="8" fill="#fafafa" stroke="#cfd8dc"/>',
         f'<text class="lab" x="53" y="{panel_y + 27}">{plan_label}</text>',
-        f'<text class="lab" x="603" y="{panel_y + 27}">3D isometric &#8212; painter-sorted faces</text>',
+        f'<text class="lab" x="603" y="{panel_y + 27}">{escape(iso_label)}</text>',
     ]
 
     domain_plan = [plan((xmin, ymin)), plan((xmax, ymin)), plan((xmax, ymax)), plan((xmin, ymax))]
     out.append(f'<polygon points="{pts(domain_plan)}" fill="#eaf2f6" fill-opacity="0.35" stroke="#90a4ae" stroke-width="1"/>')
-    for region in regions:
+    for region in plan_regions:
         # A region may declare `opacity` as a multiplier -- used for "context"
         # bodies (the silicon a via passes THROUGH) that must be visible enough
         # to show the features are embedded, but not so opaque they hide them.

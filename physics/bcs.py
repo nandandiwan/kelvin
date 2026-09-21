@@ -1,10 +1,10 @@
 """Facet-tag-driven BCs. The backside always gets an explicit Robin term
 (lumped TIM+spreader+sink); the top gets a second one only if
 chip.bcs.top_h_eff is set (dual-sided cooling — the BSPDN study's config C),
-otherwise it's natural (zero-flux), i.e. adiabatic. Left/right are always
-natural: they're the artificial cut through a repeating tile array, not real
-boundaries (PLAN.md: "the remaining Si acts as a guard band"). An explicit
-periodic BC is a further, later, additive change here, not to forms.py.
+otherwise it's natural (zero-flux), i.e. adiabatic. Unconstrained lateral
+faces are natural/adiabatic; periodic faces instead use the constrained
+trial/test space built by physics.periodic in the solvers. Periodicity is
+not a Robin term and must not be confused with insulating symmetry planes.
 """
 
 from mesh.build import (

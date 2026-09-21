@@ -64,7 +64,7 @@ def dt_schedule(n_steps, dt0=DT0_S, ratio=DT_RATIO):
         dt *= ratio
 
 
-def build_cell(class_w):
+def build_cell(device_power_w):
     by_layer, window, channel_info, contacts = build_bitcell_geometry()
     contact_sources = [
         (SourceBox(device=f"co{i}", kind="contact", x_um=_dims_um(p_)[0],
@@ -72,17 +72,17 @@ def build_cell(class_w):
                    l_um=_dims_um(p_)[3], t_um=techmap.LICON1_THICKNESS_UM,
                    power_uw=0.0), p_)
         for i, p_ in enumerate(contacts)]
-    channel_sources = channel_sources_for(channel_info, class_w)
+    channel_sources = channel_sources_for(channel_info, device_power_w)
     return by_layer, window, channel_sources, contact_sources
 
 
-def build_array(class_w, rows, cols, active_row):
+def build_array(device_power_w, rows, cols, active_row):
     by_layer, window, ch_src, co_src = tile_array(rows, cols)
     out = []
     for box, poly in ch_src:
         row = int(box.device.split("c")[0][1:])
-        cls = "".join(c for c in box.device.split("_")[1] if not c.isdigit())
-        p_uw = (class_w[cls] * 1e6) if row == active_row else 0.0
+        instance = box.device.rsplit("_", 1)[1]
+        p_uw = (device_power_w[instance] * 1e6) if row == active_row else 0.0
         out.append((dataclasses.replace(box, power_uw=p_uw), poly))
     return by_layer, window, out, co_src
 
@@ -112,9 +112,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     wl, bl, br, q, qb, _ = NAMED_BIAS_POINTS["crowbar"]
-    raw = bias_device_power_w(wl, bl, br, q, qb)
-    class_w = {"access": raw["X0"], "latch": raw["X1"], "pullup": raw["X5"],
-               "parasitic": raw["X3"]}
+    # Use each instance's own power rather than duplicating one device per class.
+    device_power_w = bias_device_power_w(wl, bl, br, q, qb)
 
     # Duty-scale to a clock: the cell draws crowbar current only during the
     # real .lib-mined access window, so the sustained average power is
@@ -127,16 +126,16 @@ def main():
         timing = mine_access_timing("data/sram22_2048x8m8w1_tt_025C_1v80.lib")
         period_ns = 1000.0 / args.freq_mhz
         duty = min(1.0, timing.min_pulse_width_high_ns / period_ns)
-        class_w = {k: v * duty for k, v in class_w.items()}
+        device_power_w = {k: v * duty for k, v in device_power_w.items()}
         print(f"clock {args.freq_mhz:g} MHz -> period {period_ns:.3f} ns, "
               f"access {timing.min_pulse_width_high_ns:.3f} ns -> duty {duty:.5f}")
 
     active_row = args.active_row if args.active_row is not None else args.rows // 2
     if args.mode == "cell":
-        by_layer, window, ch_src, co_src = build_cell(class_w)
+        by_layer, window, ch_src, co_src = build_cell(device_power_w)
         label = "single bitcell"
     else:
-        by_layer, window, ch_src, co_src = build_array(class_w, args.rows, args.cols, active_row)
+        by_layer, window, ch_src, co_src = build_array(device_power_w, args.rows, args.cols, active_row)
         label = f"{args.rows}x{args.cols} array, row {active_row} active"
     x0, x1, y0, y1 = window
     total_w = sum(b.power_uw for b, _ in ch_src) * 1e-6

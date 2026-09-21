@@ -18,10 +18,9 @@ is the right experiment:
     pedestal the array average produces. Starting from a uniform 300 K
     therefore measures the spike itself, cleanly.
 
-CROWBAR is used rather than READ because it is symmetric (X0==X2, X1==X7,
-X5==X6 at that bias, verified directly), so the per-class power mapping
-cases/run_bitcell_gallery.py uses is exact for it. READ is strongly
-asymmetric and the class mapping would misstate it.
+CROWBAR is retained as the workload for this short-time experiment. The
+shared instance-to-channel map now preserves individual device powers, so
+the heat-source assignment no longer depends on paired-device symmetry.
 
     python cases/run_bitcell_access_transient.py [--ns 4] [--dt-ps 50]
 """
@@ -36,13 +35,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 
-from cases.run_bitcell_gallery import build_bitcell_geometry, channel_sources_for
+from cases.run_bitcell_gallery import build_bitcell_geometry
+from gds.bitcell_mapping import channel_sources_for
 from gds import techmap
 from gds.sources import _dims_um
 from gds.spice_power import NAMED_BIAS_POINTS, bias_device_power_w
 from mesh.gds_build import build_gds_3d_mesh
 from mesh.gds_svg_viz import build_layer_regions, dof_indices_per_volume
 from physics.coeffs import build_coeffs
+from post.budget import verify_device_source_powers
 from solve.transient import TransientHeatSolver
 from spec.chip import BoundaryConditions, SourceBox
 
@@ -74,9 +75,7 @@ def main():
     # condition during the switching event itself.
     wl, bl, br, q, qb, _kind = NAMED_BIAS_POINTS["crowbar"]
     raw = bias_device_power_w(wl, bl, br, q, qb)
-    class_w = {"access": raw["X0"], "latch": raw["X1"],
-               "pullup": raw["X5"], "parasitic": raw["X3"]}
-    print("raw per-device power (W):", {k: f"{v:.4e}" for k, v in class_w.items()})
+    print("raw per-instance power (W):", {k: f"{v:.4e}" for k, v in raw.items()})
 
     by_layer, window, channel_info, contacts = build_bitcell_geometry()
     contact_sources = [
@@ -85,7 +84,7 @@ def main():
                    l_um=_dims_um(p_)[3], t_um=techmap.LICON1_THICKNESS_UM,
                    power_uw=0.0), p_)
         for i, p_ in enumerate(contacts)]
-    channel_sources = channel_sources_for(channel_info, class_w)
+    channel_sources = channel_sources_for(channel_info, raw)
     total_w = sum(b.power_uw for b, _ in channel_sources) * 1e-6
     print(f"total instantaneous power into the cell: {total_w*1e6:.4f} uW")
 
@@ -95,6 +94,9 @@ def main():
         contact_sources=contact_sources)
     k, rho_cp, q_f = build_coeffs(mesh_data.mesh, mesh_data.cell_tags, registry,
                                   source_depth_m=None)
+    source_audit = verify_device_source_powers(mesh_data, registry, q_f, raw)
+    if mesh_data.mesh.comm.rank == 0:
+        (OUT / "source_power_audit.json").write_text(json.dumps(source_audit, indent=2))
     r_m = None
     if args.far_field:
         x0, x1, y0, y1 = window

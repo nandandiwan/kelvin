@@ -84,9 +84,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     wl, bl, br, q, qb, _ = NAMED_BIAS_POINTS["crowbar"]
-    raw = bias_device_power_w(wl, bl, br, q, qb)
-    class_w = {"access": raw["X0"], "latch": raw["X1"], "pullup": raw["X5"],
-               "parasitic": raw["X3"]}
+    # Keep the SPICE instance identity through mirrored geometry and row selection.
+    device_power_w = bias_device_power_w(wl, bl, br, q, qb)
 
     if args.mode == "cell":
         by_layer, window, channel_info, contacts = build_bitcell_geometry()
@@ -94,15 +93,15 @@ def main():
                              y_um=_dims_um(p_)[1], z0_um=0.0, w_um=_dims_um(p_)[2],
                              l_um=_dims_um(p_)[3], t_um=techmap.LICON1_THICKNESS_UM,
                              power_uw=0.0), p_) for i, p_ in enumerate(contacts)]
-        ch_src = channel_sources_for(channel_info, class_w)
+        ch_src = channel_sources_for(channel_info, device_power_w)
         label = "single bitcell"
     else:
         by_layer, window, ch_all, co_src = tile_array(args.rows, args.cols)
         ch_src = []
         for box, poly in ch_all:
             row = int(box.device.split("c")[0][1:])
-            cls = "".join(c for c in box.device.split("_")[1] if not c.isdigit())
-            p_uw = (class_w[cls] * 1e6) if row == active_row else 0.0
+            instance = box.device.rsplit("_", 1)[1]
+            p_uw = (device_power_w[instance] * 1e6) if row == active_row else 0.0
             ch_src.append((dataclasses.replace(box, power_uw=p_uw), poly))
         label = f"{args.rows}x{args.cols} array, row {active_row} active"
 

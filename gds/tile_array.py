@@ -31,6 +31,7 @@ from typing import Dict, List, Tuple
 import gdstk
 
 from gds import techmap
+from gds.bitcell_mapping import map_bitcell_channels
 from gds.read import flatten_by_layer
 from gds.sources import _dims_um, extract_channels, extract_contacts
 from spec.chip import SourceBox
@@ -38,17 +39,8 @@ from spec.chip import SourceBox
 GDS_PATH = "data/sram22_64x22m4w22.gds"
 CELL_NAME = "sram_sp_cell"
 CELL_W_UM, CELL_H_UM = 1.2, 1.58     # the cell's own bbox extent (see build_gds_3d_mesh calls)
-_NWELL_SPLIT_X_UM = -0.72             # PMOS (nwell) at x < this, in the cell's own local coords
 
 LayerKey = Tuple[int, int]
-
-
-def _classify(x_ext, y_ext, is_left):
-    if abs(y_ext - 0.025) < 0.01:
-        return "parasitic"
-    if abs(x_ext - 0.21) < 0.01:
-        return "latch"
-    return "pullup" if is_left else "access"
 
 
 def _transform_points(pts, mirror_x, mirror_y):
@@ -82,8 +74,10 @@ def tile_array(n_rows: int, n_cols: int):
     n_rows x n_cols array of real bitcells, checkerboard-mirrored at every
     boundary, in one absolute coordinate frame ready for build_gds_3d_mesh.
 
-    Each channel SourceBox's `device` field is "r{row}c{col}_{cls}{i}" so a
-    caller can bin per-cell power/temperature by (row, col) afterward.
+    Each channel SourceBox's `device` field is "r{row}c{col}_{instance}",
+    where instance is the original SPICE name X0..X7. Mapping happens in the
+    original cell frame before any mirrors, so transforms preserve device
+    identity and asymmetric per-instance powers.
     """
     lib = gdstk.read_gds(GDS_PATH)
     cell = next(c for c in lib.cells if c.name == CELL_NAME)
@@ -92,13 +86,8 @@ def tile_array(n_rows: int, n_cols: int):
     assert abs((bx1 - bx0) - CELL_W_UM) < 1e-6 and abs((by1 - by0) - CELL_H_UM) < 1e-6, (
         f"cell bbox {(bx1-bx0, by1-by0)} != assumed {(CELL_W_UM, CELL_H_UM)}")
 
-    channels_local = extract_channels(by_layer_local)
+    channels_local = map_bitcell_channels(by_layer_local)
     contacts_local = extract_contacts(by_layer_local)
-    ch_classified = []
-    for i, poly in enumerate(channels_local):
-        cx, cy, xe, ye = _dims_um(poly)
-        cls = _classify(xe, ye, is_left=cx < _NWELL_SPLIT_X_UM)
-        ch_classified.append((cls, poly))
 
     by_layer_big: Dict[LayerKey, List] = {}
     channel_sources, contact_sources = [], []
@@ -116,12 +105,13 @@ def tile_array(n_rows: int, n_cols: int):
                     pts = [(x + ox, y + oy) for x, y in pts]
                     dst.append(gdstk.Polygon(pts, layer=key[0], datatype=key[1]))
 
-            for i, (cls, poly) in enumerate(ch_classified):
+            for channel in channels_local:
+                poly = channel.polygon
                 pts = _transform_points(list(poly.points), mirror_x, mirror_y)
                 pts = [(x + ox, y + oy) for x, y in pts]
                 tpoly = gdstk.Polygon(pts, layer=poly.layer, datatype=poly.datatype)
                 cx, cy, xe, ye = _dims_um(tpoly)
-                box = SourceBox(device=f"r{row}c{col}_{cls}{i}", kind="channel",
+                box = SourceBox(device=f"r{row}c{col}_{channel.instance}", kind="channel",
                                 x_um=cx, y_um=cy, z0_um=0.0, w_um=xe, l_um=ye,
                                 t_um=techmap.CHANNEL_THICKNESS_UM, power_uw=0.0)
                 channel_sources.append((box, tpoly))

@@ -136,13 +136,12 @@ def main():
 
     wl, bl, br, q, qb, _ = NAMED_BIAS_POINTS["crowbar"]
     raw = bias_device_power_w(wl, bl, br, q, qb)
-    class_w = {k: v * duty for k, v in
-               {"access": raw["X0"], "latch": raw["X1"], "pullup": raw["X5"],
-                "parasitic": raw["X3"]}.items()}
+    # Preserve all eight instance powers, including asymmetric same-class pairs.
+    device_power_w = {instance: power * duty for instance, power in raw.items()}
     print(f"clock {f_mhz:.1f} MHz (period {period_ns:.3f} ns), access "
           f"{timing.min_pulse_width_high_ns:.3f} ns -> duty {duty:.5f}")
     print("duty-averaged per-device power (W):",
-          {k: f"{v:.3e}" for k, v in class_w.items()})
+          {k: f"{v:.3e}" for k, v in device_power_w.items()})
 
     if args.mode == "cell":
         by_layer, geom_window, channel_info, contacts = build_bitcell_geometry()
@@ -150,7 +149,7 @@ def main():
                              y_um=_dims_um(pp)[1], z0_um=0.0, w_um=_dims_um(pp)[2],
                              l_um=_dims_um(pp)[3], t_um=techmap.LICON1_THICKNESS_UM,
                              power_uw=0.0), pp) for i, pp in enumerate(contacts)]
-        ch_src = channel_sources_for(channel_info, class_w)
+        ch_src = channel_sources_for(channel_info, device_power_w)
         label = "single bitcell"
         active_rows = None
     else:
@@ -162,10 +161,10 @@ def main():
         ch_src = []
         for box, poly in ch_all:
             row = int(box.device.split("c")[0][1:])
-            cls = "".join(c for c in box.device.split("_")[1] if not c.isdigit())
+            instance = box.device.rsplit("_", 1)[1]
             on = (row in active_rows) if args.pattern != "row-walk" else True
             ch_src.append((dataclasses.replace(
-                box, power_uw=(class_w[cls] * 1e6) if on else 0.0), poly))
+                box, power_uw=(device_power_w[instance] * 1e6) if on else 0.0), poly))
         label = f"{args.rows}x{args.cols} array ({args.pattern})"
 
     window = centred_window(geom_window, args.window_um)
