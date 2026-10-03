@@ -1,0 +1,13 @@
+{
+  "initial_bits": [[0, 1], [1, 0]],
+  "bitline_cap_f": 1.6e-14,
+  "operations": [
+    {"start_ns": 0.1, "operation": "read", "row": 0},
+    {"start_ns": 1.1, "operation": "write", "row": 0, "data": [1, 0], "mask": [1, 1]},
+    {"start_ns": 2.1, "operation": "read", "row": 0},
+    {"start_ns": 3.1, "operation": "write", "row": 1, "data": [0, 1], "mask": [1, 0]},
+    {"start_ns": 4.1, "operation": "read", "row": 1},
+    {"start_ns": 5.1, "operation": "write", "row": 1, "data": [0, 1], "mask": [1, 1]},
+    {"start_ns": 6.1, "operation": "read", "row": 1}
+  ]
+}
