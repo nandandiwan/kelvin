@@ -43,8 +43,16 @@ the operators and source are transformed consistently with `P.T A P` and
 The exporter rejects multi-rank input instead of silently gathering large
 operators. A distributed or hierarchical offline basis builder is still
 needed for chip scale. Dense basis allocation has an explicit memory guard.
-The current backend reconstructs the full field per step for verification;
-production use should project source and observation maps in advance.
+The reference backend reconstructs the full field per step for verification.
+`solve/reduced_ports.py:ProjectedThermalPorts` instead projects source and
+observation maps during setup, keeping only reduced operators online. Each
+source column distributes one watt; each observation row is a normalized
+temperature average (or point selection). Sparse maps are supported.
+The online callback receives observed temperature rises and returns watts per
+source. It must include every temperature on which that power model depends;
+sources outside the supplied spatial span require new maps. No full field is
+reconstructed during stepping. Port convergence does not certify unobserved
+hotspots; validate the basis against the full reference before deployment.
 
 This formulation retains a detailed patch within one discretized system.
 An independently meshed coarse chip plus fine patch needs conservative
@@ -60,16 +68,18 @@ Use a compatible DOLFINx/dolfinx_mpc environment and a fresh output path:
 
 ```bash
 python cases/limited_run.py --cores 4 --threads 1 -- \
-  python -B -m pytest -q tests/test_reduction.py tests/test_reduction_fem.py
+  python -B -m pytest -q tests/test_reduction.py tests/test_reduction_fem.py tests/test_reduced_ports.py
 python cases/limited_run.py --cores 4 --threads 1 -- \
   python -B cases/verify_patch_reduction.py --out out/reduction.json
 ```
 
-2026-10-03: nine reduction tests passed with DOLFINx/MPC 0.11. Full-mode
+2026-10-03: thirteen reduction tests passed with DOLFINx/MPC 0.11. Full-mode
 reconstruction agreed with the public FEM transient for both natural and
 nonmatching periodic lateral boundaries. Tests also cover held-out pulses,
 mode enrichment, static distant-source enrichment, energy conservation,
 temperature-dependent loads and rollback on failed convergence.
+Projected ports match the full-field reduced reference with constant and
+temperature-dependent power, including rollback and invalid-map checks.
 
 The default 3D silicon-slab benchmark has 726 DOFs, 60 steps of 20 ns, and a
 0.284998 K peak rise. The same source-local probes are used for every patch:
@@ -89,6 +99,19 @@ full sparse solver took about 7 ms for the transient, while reduced solves
 took 8–34 ms plus 16–48 ms setup on this small benchmark: no speedup is
 claimed. The benchmark isolates reduction error; it is not a mesh-convergence
 study, an extracted chip model, or evidence for calibrated SRAM temperature.
+
+With `--n 20`, the same benchmark has 4,851 DOFs. Retaining 275 patch DOFs
+plus 24 exterior modes and one enrichment gives 300 reduced DOFs. Its maximum
+source-local error is 1.064e-4 K on a 0.3384 K peak rise; the full-field error
+outside the patch reaches 0.00517 K. Projected observations agree with the
+full-field reduced solver within 4.5e-16 K. Online advance took 18.7 ms versus
+104 ms for the full sparse reference (about 5.6x), but setup took 668 ms:
+**this short run is slower end-to-end**. Basis reuse across longer histories
+or multiple workloads is necessary to amortize setup. Enlarging the retained
+patch to 891 DOFs made even online stepping slower than the full solver.
+These single-run timings are indicative, not a distributed scaling result.
+The two mesh sizes have different discretized source volumes; their peak
+temperatures must not be treated as a mesh-convergence comparison.
 
 ## Integration order
 

@@ -15,12 +15,14 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
+from scipy import sparse
 from scipy.sparse.linalg import splu
 from dolfinx import fem, mesh as dmesh
 from mpi4py import MPI
 
 from solve.reduction import component_basis, ReducedHeatSolver
 from solve.reduction_fem import assemble_thermal_operators
+from solve.reduced_ports import ProjectedThermalPorts
 from spec.chip import BoundaryConditions
 
 
@@ -66,6 +68,10 @@ def benchmark(n=10, modes=(0, 8, 24), patch_fractions=(.2, .4)):
             started = time.perf_counter()
             basis = component_basis(system.mass, system.stiffness, patch, count)
             solver = ReducedHeatSolver(system.mass, system.stiffness, basis)
+            observations = sparse.csr_matrix((np.ones(len(outputs)),
+                                               (np.arange(len(outputs)), outputs)),
+                                              shape=(len(outputs), len(load)))
+            ports = ProjectedThermalPorts(solver, (load / load.sum())[:, None], observations)
             setup_seconds = time.perf_counter() - started
             history, energy_residuals = [], []
             started = time.perf_counter()
@@ -75,12 +81,25 @@ def benchmark(n=10, modes=(0, 8, 24), patch_fractions=(.2, .4)):
                 energy_residuals.append(abs(result.energy_residual_w))
             seconds = time.perf_counter() - started
             error = np.asarray(history) - reference
+            port_history, port_energy = [], []
+            started = time.perf_counter()
+            for amplitude in amplitudes:
+                result = ports.step(dt, [amplitude * load.sum()])
+                port_history.append(result.temperature_rise_k)
+                port_energy.append(abs(result.energy_residual_w))
+            port_seconds = time.perf_counter() - started
+            port_error = np.asarray(port_history) - np.asarray(history)[:, outputs]
+            if np.max(abs(port_error)) > 1e-9:
+                raise RuntimeError("Projected ports disagree with full-field reduced reference")
             results.append({
                 "patch_fraction": fraction, "retained_dofs": len(patch), "exterior_modes": count,
                 "reduced_dofs": basis.shape[1], "setup_seconds": setup_seconds,
                 "advance_seconds": seconds, "max_patch_error_k": float(np.max(abs(error[:, outputs]))),
                 "max_full_error_k": float(np.max(abs(error))),
                 "max_energy_residual_w": max(energy_residuals),
+                "projected_advance_seconds": port_seconds,
+                "projected_vs_reconstructed_max_error_k": float(np.max(abs(port_error))),
+                "projected_max_energy_residual_w": max(port_energy),
             })
     return {"scope": "uniform silicon 3D FEM numerical reduction benchmark, not chip calibration",
             "full_dofs": system.mass.shape[0], "full_advance_seconds": full_seconds,
