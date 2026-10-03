@@ -10,6 +10,10 @@ vector, with constrained temperatures reconstructed before the next step.
 Strong Dirichlet data are not currently exposed by this transient API.
 """
 
+from collections import OrderedDict
+import math
+import time
+
 import ufl
 from dolfinx.fem import Constant, Function, form, functionspace
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, create_vector
@@ -28,7 +32,16 @@ class TransientHeatSolver:
         "ksp_error_if_not_converged": True,
     }
 
-    def __init__(self, mesh_data, k, rho_cp, chip, dt: float, T0: float = 300.0):
+    def __init__(self, mesh_data, k, rho_cp, chip, dt: float, T0: float = 300.0,
+                 matrix_cache_size: int = 4):
+        if (isinstance(matrix_cache_size, bool) or not isinstance(matrix_cache_size, int)
+                or matrix_cache_size < 1):
+            raise ValueError("matrix_cache_size must be a positive integer")
+        self._validate_dt(dt)
+        self._matrix_cache_size = matrix_cache_size
+        self._operators = OrderedDict()
+        self.statistics = dict(matrix_assemblies=0, cache_hits=0, steps=0,
+                               krylov_iterations=0, solve_seconds=0.0)
         self.mesh_data = mesh_data
         mesh = mesh_data.mesh
         self.V = functionspace(mesh, ("Lagrange", 1))
@@ -54,19 +67,56 @@ class TransientHeatSolver:
         self._a_form = form(a)
         self._L_form = form(L)
 
+        self._b = create_vector(self.V)
+        self._select_operator(float(dt))
+
+    @staticmethod
+    def _validate_dt(dt):
+        if isinstance(dt, bool) or not math.isfinite(float(dt)) or dt <= 0:
+            raise ValueError("dt must be finite and positive")
+
+    def _select_operator(self, dt):
+        # Equal intended intervals obtained by subtracting timestamps can differ
+        # by roundoff. Only merge at roundoff scale, never quantize physical dt.
+        key = next((value for value in self._operators
+                    if math.isclose(value, dt, rel_tol=6e-14, abs_tol=0.0)), None)
+        if key is not None:
+            self._operators.move_to_end(key)
+            self._A, self._ksp = self._operators[key]
+            self._dt.value = key
+            self._dt_value = key
+            self.statistics["cache_hits"] += 1
+            return
+        self._dt.value = dt
+        self._dt_value = dt
         self._A = self._assemble_matrix()
         self._A.assemble()
-        self._b = create_vector(self.V)
-
-        self._ksp = PETSc.KSP().create(mesh.comm)
+        self._ksp = PETSc.KSP().create(self.mesh_data.mesh.comm)
         self._ksp.setOperators(self._A)
-        prefix = "thermals_transient_"
+        prefix = f"thermals_transient_{id(self)}_"
         self._ksp.setOptionsPrefix(prefix)
         opts = PETSc.Options()
         for key, val in self.PETSC_OPTIONS.items():
             opts[f"{prefix}{key}"] = val
         self._ksp.setFromOptions()
-        self._dt_value = dt
+        self._operators[dt] = (self._A, self._ksp)
+        self.statistics["matrix_assemblies"] += 1
+        if len(self._operators) > self._matrix_cache_size:
+            _, (matrix, solver) = self._operators.popitem(last=False)
+            solver.destroy()
+            matrix.destroy()
+
+    def clear_operator_cache(self):
+        """Discard inactive cached operators; retain the currently active one.
+
+        Coefficients and boundary conditions must remain fixed during the
+        lifetime of this solver. Construct a new solver if they change.
+        """
+        for key, (matrix, solver) in list(self._operators.items()):
+            if matrix is not self._A:
+                solver.destroy()
+                matrix.destroy()
+                del self._operators[key]
 
     def _assemble_matrix(self):
         if self._mpc is None:
@@ -80,14 +130,9 @@ class TransientHeatSolver:
         step's source term. Pass `dt` to change the timestep (e.g. a
         geometrically growing schedule spanning ns to ms) -- cheap: just a
         constant update + matrix re-assembly, no re-JIT."""
-        if dt is not None and dt != self._dt_value:
-            self._dt.value = dt
-            self._dt_value = dt
-            previous_A = self._A
-            self._A = self._assemble_matrix()
-            self._A.assemble()
-            self._ksp.setOperators(self._A)
-            previous_A.destroy()
+        if dt is not None:
+            self._validate_dt(dt)
+            self._select_operator(float(dt))
 
         self.q.x.array[:] = q_array
         self.q.x.scatter_forward()
@@ -103,7 +148,11 @@ class TransientHeatSolver:
 
         T_new = Function(self.V)
         T_new.name = "T"
+        started = time.perf_counter()
         self._ksp.solve(self._b, T_new.x.petsc_vec)
+        self.statistics["solve_seconds"] += time.perf_counter() - started
+        self.statistics["krylov_iterations"] += self._ksp.getIterationNumber()
+        self.statistics["steps"] += 1
         if self._ksp.getConvergedReason() <= 0:
             raise RuntimeError(f"Transient heat solve failed: KSP reason {self._ksp.getConvergedReason()}")
         T_new.x.scatter_forward()
